@@ -277,7 +277,8 @@ app.post('/api/sendText', auth, async (req, res) => {
 // POST /api/sendVoice  { chatId, session, file: { url } }
 app.post('/api/sendVoice', auth, async (req, res) => {
   let { chatId, session = 'default', file } = req.body;
-  if (!chatId || !file?.url) return res.status(400).json({ error: 'chatId et file.url requis' });
+  if (!chatId) return res.status(400).json({ error: 'chatId requis' });
+  if (!file?.url) return res.json({ success: true, skipped: true, reason: 'Aucune URL audio configurée' });
 
   try {
     const cl   = getClient(session);
@@ -302,7 +303,8 @@ app.post('/api/sendVoice', auth, async (req, res) => {
 // POST /api/sendVideo  { chatId, session, file: { url }, caption }
 app.post('/api/sendVideo', auth, async (req, res) => {
   let { chatId, session = 'default', file, caption = '' } = req.body;
-  if (!chatId || !file?.url) return res.status(400).json({ error: 'chatId et file.url requis' });
+  if (!chatId) return res.status(400).json({ error: 'chatId requis' });
+  if (!file?.url) return res.json({ success: true, skipped: true, reason: 'Aucune URL vidéo configurée' });
 
   try {
     const cl    = getClient(session);
@@ -322,7 +324,8 @@ app.post('/api/sendVideo', auth, async (req, res) => {
 // POST /api/sendFile   { chatId, session, file: { url, name }, caption }
 app.post('/api/sendFile', auth, async (req, res) => {
   let { chatId, session = 'default', file, caption = '' } = req.body;
-  if (!chatId || !file?.url) return res.status(400).json({ error: 'chatId et file.url requis' });
+  if (!chatId) return res.status(400).json({ error: 'chatId requis' });
+  if (!file?.url) return res.json({ success: true, skipped: true, reason: 'Aucune URL fichier configurée' });
 
   try {
     const cl    = getClient(session);
