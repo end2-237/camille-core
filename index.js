@@ -47,8 +47,24 @@ const auth = (req, res, next) => {
 
 const sessions = new Map();
 
+function cleanLockFiles(name) {
+  // Supprime les SingletonLock laissés par un ancien container Docker
+  const profileDirs = [
+    path.join(SESSIONS_DIR, `session-${name}`, `.wwebjs_auth`, `session-${name}`),
+    path.join(SESSIONS_DIR, `session-${name}`, `.wwebjs_auth`, `session-${name}`, 'Default'),
+  ];
+  for (const dir of profileDirs) {
+    const lockFile = path.join(dir, 'SingletonLock');
+    const cookieLock = path.join(dir, 'SingletonCookie');
+    for (const f of [lockFile, cookieLock]) {
+      try { if (fs.existsSync(f)) { fs.unlinkSync(f); console.log(`[${name}] 🧹 Lock supprimé: ${f}`); } } catch {}
+    }
+  }
+}
+
 function createSession(name) {
   if (sessions.has(name)) return sessions.get(name);
+  cleanLockFiles(name);
 
   const data = { name, status: 'INITIALIZING', qrBase64: null, client: null, phone: null };
   sessions.set(name, data);
@@ -70,6 +86,7 @@ function createSession(name) {
         '--no-first-run',
         '--no-zygote',
         '--single-process',
+        '--disable-profile-directory-locking',
       ],
     },
   });
