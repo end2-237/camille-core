@@ -261,6 +261,26 @@ app.delete('/api/sessions/:name/stop', auth, async (req, res) => {
   res.json({ success: ok });
 });
 
+// DELETE /api/sessions/:name/reset — arrête la session ET supprime les fichiers d'auth
+// Utilisé par le dashboard Camille lors d'une déconnexion volontaire (changer de numéro)
+app.delete('/api/sessions/:name/reset', auth, async (req, res) => {
+  const name = req.params.name;
+  await stopSession(name);
+
+  // Supprimer les fichiers d'auth LocalAuth
+  const sessionDir = path.join(SESSIONS_DIR, `session-${name}`);
+  try {
+    if (fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      console.log(`[${name}] 🗑️  Auth supprimée: ${sessionDir}`);
+    }
+  } catch (e) {
+    console.warn(`[${name}] ⚠️  Impossible de supprimer auth: ${e.message}`);
+  }
+
+  res.json({ success: true });
+});
+
 app.get('/api/sessions/:name/status', auth, (req, res) => {
   const s = sessions.get(req.params.name);
   if (!s) return res.status(404).json({ error: 'Session introuvable' });
