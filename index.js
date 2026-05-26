@@ -48,18 +48,32 @@ const auth = (req, res, next) => {
 const sessions = new Map();
 
 function cleanLockFiles(name) {
-  // Supprime les SingletonLock laissés par un ancien container Docker
-  const profileDirs = [
-    path.join(SESSIONS_DIR, `session-${name}`, `.wwebjs_auth`, `session-${name}`),
-    path.join(SESSIONS_DIR, `session-${name}`, `.wwebjs_auth`, `session-${name}`, 'Default'),
-  ];
-  for (const dir of profileDirs) {
-    const lockFile = path.join(dir, 'SingletonLock');
-    const cookieLock = path.join(dir, 'SingletonCookie');
-    for (const f of [lockFile, cookieLock]) {
-      try { if (fs.existsSync(f)) { fs.unlinkSync(f); console.log(`[${name}] 🧹 Lock supprimé: ${f}`); } } catch {}
+  // Cherche et supprime tous les SingletonLock/Cookie/Socket récursivement
+  // Ces fichiers sont laissés par l'ancien container Docker et bloquent Chromium
+  const sessionDir = path.join(SESSIONS_DIR, `session-${name}`);
+  if (!fs.existsSync(sessionDir)) return;
+
+  const LOCK_FILES = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+
+  function removeLocks(dir) {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (LOCK_FILES.includes(entry.name)) {
+        try {
+          fs.rmSync(fullPath, { force: true });
+          console.log(`[${name}] 🧹 Lock supprimé: ${fullPath}`);
+        } catch (e) {
+          console.warn(`[${name}] ⚠️  Impossible de supprimer ${fullPath}: ${e.message}`);
+        }
+      } else if (entry.isDirectory()) {
+        removeLocks(fullPath);
+      }
     }
   }
+
+  removeLocks(sessionDir);
 }
 
 function createSession(name) {
