@@ -50,7 +50,7 @@ const sessions = new Map();
 function createSession(name) {
   if (sessions.has(name)) return sessions.get(name);
 
-  const data = { name, status: 'INITIALIZING', qrBase64: null, client: null };
+  const data = { name, status: 'INITIALIZING', qrBase64: null, client: null, phone: null };
   sessions.set(name, data);
 
   const client = new Client({
@@ -91,11 +91,15 @@ function createSession(name) {
     console.log(`[${name}] 🔐 Authentifié`);
   });
 
-  client.on('ready', () => {
+  client.on('ready', async () => {
     data.status   = 'CONNECTED';
     data.qrBase64 = null;
+    try {
+      const info = await client.getInfo();
+      data.phone = info?.wid?.user || null;
+    } catch {}
     io.emit('session:update', { name, status: data.status });
-    console.log(`[${name}] ✅ Connecté et prêt`);
+    console.log(`[${name}] ✅ Connecté et prêt${data.phone ? ' — ' + data.phone : ''}`);
   });
 
   client.on('auth_failure', (msg) => {
@@ -229,7 +233,7 @@ app.delete('/api/sessions/:name/stop', auth, async (req, res) => {
 app.get('/api/sessions/:name/status', auth, (req, res) => {
   const s = sessions.get(req.params.name);
   if (!s) return res.status(404).json({ error: 'Session introuvable' });
-  res.json({ name: s.name, status: s.status });
+  res.json({ name: s.name, status: s.status, phone: s.phone || null });
 });
 
 app.get('/api/sessions/:name/qr', auth, (req, res) => {
