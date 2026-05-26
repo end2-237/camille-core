@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  camille-core:
+    build: .
+    # NE PAS mettre container_name ni ports — Coolify les gère
+    volumes:
+      # Volume nommé — Coolify le persiste automatiquement
+      - sessions-data:/app/sessions
+    environment:
+      - PORT=3000
+      - API_KEY=${API_KEY:-camille-core-secret}
+      - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL:-}
+      - N8N_WEBHOOK_DEFAULT=${N8N_WEBHOOK_DEFAULT:-}
+      - PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+    shm_size: '256mb'
+
+volumes:
+  sessions-data:
