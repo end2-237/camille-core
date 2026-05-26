@@ -21,6 +21,24 @@ const PORT          = process.env.PORT          || 3000;
 const API_KEY       = process.env.API_KEY       || 'camille-core-secret';
 const N8N_WEBHOOK   = process.env.N8N_WEBHOOK_URL || '';
 const SESSIONS_DIR  = process.env.SESSIONS_DIR  || './sessions';
+const VERSION       = '1.0.0';
+const START_TIME    = Date.now();
+
+// ── Webhook config (persisted in webhooks.json) ───────────────────────────────
+const WEBHOOKS_FILE = path.join(__dirname, 'webhooks.json');
+
+function loadWebhookConfig() {
+  try { if (fs.existsSync(WEBHOOKS_FILE)) return JSON.parse(fs.readFileSync(WEBHOOKS_FILE, 'utf8')); } catch {}
+  return { global: N8N_WEBHOOK, sessions: {} };
+}
+
+function saveWebhookConfig(cfg) {
+  try { fs.writeFileSync(WEBHOOKS_FILE, JSON.stringify(cfg, null, 2)); } catch (e) { console.error('webhooks.json write error:', e.message); }
+}
+
+let webhookConfig = loadWebhookConfig();
+if (!webhookConfig.sessions) webhookConfig.sessions = {};
+if (!webhookConfig.global && N8N_WEBHOOK) webhookConfig.global = N8N_WEBHOOK;
 
 // ── Serveur HTTP + Socket.io ──────────────────────────────────────────────────
 
@@ -156,7 +174,10 @@ function createSession(name) {
     if (msg.fromMe) return;
 
     // Support webhook par session : N8N_WEBHOOK_MONSESSION ou N8N_WEBHOOK_URL global
-    const webhookUrl = process.env[`N8N_WEBHOOK_${name.toUpperCase()}`] || N8N_WEBHOOK;
+    const webhookUrl = webhookConfig.sessions[name]
+      || process.env[`N8N_WEBHOOK_${name.toUpperCase()}`]
+      || webhookConfig.global
+      || N8N_WEBHOOK;
     if (!webhookUrl) return;
 
     try {
@@ -422,6 +443,36 @@ app.post('/api/stopTyping', auth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// ── Server info ───────────────────────────────────────────────────────────────
+
+app.get('/api/server/info', auth, (_req, res) => {
+  res.json({
+    version:  VERSION,
+    uptime:   Math.floor((Date.now() - START_TIME) / 1000),
+    sessions: sessions.size,
+    connected: [...sessions.values()].filter(s => s.status === 'CONNECTED').length,
+  });
+});
+
+// ── Webhook config ────────────────────────────────────────────────────────────
+
+app.get('/api/config/webhooks', auth, (_req, res) => {
+  res.json({ global: webhookConfig.global || '', sessions: webhookConfig.sessions });
+});
+
+app.post('/api/config/webhooks', auth, (req, res) => {
+  const { session, url } = req.body;
+  if (!session) return res.status(400).json({ error: 'session requis' });
+  if (session === '__global__') {
+    webhookConfig.global = url || '';
+  } else {
+    if (url) webhookConfig.sessions[session] = url;
+    else delete webhookConfig.sessions[session];
+  }
+  saveWebhookConfig(webhookConfig);
+  res.json({ success: true });
 });
 
 // ── Socket.io ─────────────────────────────────────────────────────────────────

@@ -3,234 +3,1290 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Camille Core — Dashboard</title>
+  <title>Camille Core</title>
   <script src="/socket.io/socket.io.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <!-- Favicon SVG inline -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0a0b'/%3E%3Ccircle cx='16' cy='16' r='11' fill='none' stroke='%2322c55e' stroke-width='2.5'/%3E%3Ccircle cx='21.5' cy='10.5' r='2' fill='%230a0a0b'/%3E%3Ccircle cx='16' cy='5' r='1.5' fill='%2322c55e'/%3E%3Ccircle cx='23.8' cy='9' r='1.5' fill='%2322c55e'/%3E%3C/svg%3E" />
+
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    body {
-      background: #0a0a0a;
-      color: #e5e5e5;
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      min-height: 100vh;
+    :root {
+      --bg:        #0a0a0b;
+      --surface:   #111114;
+      --surface2:  #18181c;
+      --border:    #1e1e24;
+      --border2:   #27272f;
+      --text:      #e8e8f0;
+      --muted:     #6b6b7e;
+      --muted2:    #3a3a48;
+      --accent:    #22c55e;
+      --accent-bg: rgba(34,197,94,.08);
+      --accent-border: rgba(34,197,94,.2);
+      --yellow:    #fbbf24;
+      --yellow-bg: rgba(251,191,36,.08);
+      --blue:      #60a5fa;
+      --blue-bg:   rgba(96,165,250,.08);
+      --red:       #f87171;
+      --red-bg:    rgba(248,113,113,.08);
+      --radius:    12px;
+      --radius-sm: 8px;
+      --sidebar-w: 220px;
+      --font:      'Outfit', system-ui, sans-serif;
+      --mono:      'JetBrains Mono', monospace;
     }
 
-    header {
-      background: #111;
-      border-bottom: 1px solid #222;
-      padding: 18px 32px;
+    html, body { height: 100%; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* ─── LOGIN SCREEN ─────────────────────────────────────────────────────── */
+
+    #login-screen {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      justify-content: center;
+      z-index: 9999;
     }
 
-    header h1 {
-      font-size: 20px;
+    #login-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 48px 44px;
+      width: 380px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 24px;
+    }
+
+    .login-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .login-logo svg { width: 40px; height: 40px; }
+
+    .login-logo-text {
+      font-size: 24px;
       font-weight: 700;
-      color: #25d366;
       letter-spacing: -0.5px;
     }
+    .login-logo-text span { color: var(--accent); }
 
-    header h1 span { color: #fff; }
-
-    #add-form {
-      display: flex;
-      gap: 10px;
-      align-items: center;
+    .login-subtitle {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+      margin-top: -12px;
     }
 
-    #add-form input {
-      background: #1a1a1a;
-      border: 1px solid #333;
-      color: #e5e5e5;
-      padding: 8px 14px;
-      border-radius: 8px;
-      font-size: 14px;
-      width: 180px;
+    .login-field {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .login-field label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .6px;
+    }
+
+    .login-field input {
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      padding: 10px 14px;
       outline: none;
+      width: 100%;
       transition: border-color .2s;
     }
-    #add-form input:focus { border-color: #25d366; }
-    #add-form input::placeholder { color: #555; }
+    .login-field input:focus { border-color: var(--accent); }
 
-    button {
-      background: #25d366;
+    #login-btn {
+      width: 100%;
+      background: var(--accent);
       color: #000;
       border: none;
-      padding: 8px 18px;
-      border-radius: 8px;
-      font-size: 13px;
+      border-radius: var(--radius-sm);
+      font-family: var(--font);
+      font-size: 14px;
       font-weight: 700;
+      padding: 11px;
       cursor: pointer;
       transition: background .2s, transform .1s;
     }
-    button:hover  { background: #1ebe57; }
-    button:active { transform: scale(.97); }
+    #login-btn:hover  { background: #1db850; }
+    #login-btn:active { transform: scale(.98); }
 
-    button.danger {
-      background: #e53935;
-      color: #fff;
-      padding: 6px 12px;
+    #login-error {
       font-size: 12px;
-    }
-    button.danger:hover { background: #c62828; }
-
-    main {
-      padding: 32px;
-      max-width: 1100px;
-      margin: 0 auto;
-    }
-
-    #empty-state {
+      color: var(--red);
       text-align: center;
-      padding: 80px 0;
-      color: #555;
-    }
-    #empty-state p { font-size: 15px; margin-top: 8px; }
-
-    #sessions-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 20px;
+      min-height: 16px;
     }
 
-    .card {
-      background: #111;
-      border: 1px solid #222;
-      border-radius: 14px;
-      padding: 24px;
+    /* ─── APP SHELL ────────────────────────────────────────────────────────── */
+
+    #app {
+      display: none;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #app.visible { display: flex; }
+
+    /* ─── SIDEBAR ──────────────────────────────────────────────────────────── */
+
+    #sidebar {
+      width: var(--sidebar-w);
+      min-width: var(--sidebar-w);
+      background: var(--surface);
+      border-right: 1px solid var(--border);
       display: flex;
       flex-direction: column;
-      gap: 16px;
-      transition: border-color .2s;
+      padding: 0;
+      overflow: hidden;
     }
-    .card:hover { border-color: #333; }
 
-    .card-header {
+    .sidebar-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 22px 20px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .sidebar-logo svg { width: 30px; height: 30px; flex-shrink: 0; }
+
+    .sidebar-logo-text {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: -0.4px;
+    }
+    .sidebar-logo-text span { color: var(--accent); }
+
+    .sidebar-nav {
+      flex: 1;
+      padding: 14px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .nav-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--muted2);
+      text-transform: uppercase;
+      letter-spacing: .8px;
+      padding: 8px 10px 4px;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 500;
+      transition: background .15s, color .15s;
+      user-select: none;
+    }
+    .nav-item:hover { background: var(--surface2); color: var(--text); }
+    .nav-item.active { background: var(--accent-bg); color: var(--accent); }
+    .nav-item.active svg path, .nav-item.active svg circle, .nav-item.active svg rect { stroke: var(--accent) !important; }
+
+    .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+
+    .nav-badge {
+      margin-left: auto;
+      background: var(--surface2);
+      color: var(--muted);
+      font-size: 11px;
+      font-family: var(--mono);
+      font-weight: 500;
+      padding: 1px 7px;
+      border-radius: 20px;
+      border: 1px solid var(--border2);
+      transition: background .2s;
+    }
+    .nav-item.active .nav-badge {
+      background: var(--accent-bg);
+      color: var(--accent);
+      border-color: var(--accent-border);
+    }
+
+    .sidebar-footer {
+      padding: 16px 20px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      position: relative;
+      flex-shrink: 0;
+    }
+    .pulse-dot::after {
+      content: '';
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+      background: var(--accent);
+      opacity: .3;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%,100% { transform: scale(1); opacity: .3; }
+      50%      { transform: scale(1.8); opacity: 0; }
+    }
+
+    .sidebar-version {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+
+    /* ─── MAIN CONTENT ─────────────────────────────────────────────────────── */
+
+    #content {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .content-header {
+      padding: 24px 32px 20px;
+      border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
       justify-content: space-between;
+      flex-shrink: 0;
+      background: var(--bg);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      backdrop-filter: blur(8px);
     }
 
-    .card-name {
-      font-size: 16px;
+    .content-title {
+      font-size: 18px;
       font-weight: 700;
-      color: #fff;
+      letter-spacing: -0.3px;
+    }
+
+    .content-subtitle {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .content-body {
+      padding: 28px 32px;
+      flex: 1;
+    }
+
+    /* ─── BUTTONS ──────────────────────────────────────────────────────────── */
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--font);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 8px 16px;
+      border-radius: var(--radius-sm);
+      border: none;
+      cursor: pointer;
+      transition: background .15s, transform .1s, opacity .15s;
+      white-space: nowrap;
+    }
+    .btn:active { transform: scale(.97); }
+    .btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+    .btn-primary { background: var(--accent); color: #000; }
+    .btn-primary:hover { background: #1db850; }
+
+    .btn-ghost {
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border2);
+    }
+    .btn-ghost:hover { background: var(--border2); }
+
+    .btn-danger { background: var(--red-bg); color: var(--red); border: 1px solid rgba(248,113,113,.15); }
+    .btn-danger:hover { background: rgba(248,113,113,.15); }
+
+    .btn-sm { padding: 5px 11px; font-size: 12px; }
+    .btn-icon { padding: 7px; }
+
+    /* ─── SESSIONS VIEW ────────────────────────────────────────────────────── */
+
+    #view-sessions { display: none; }
+    #view-sessions.active { display: block; }
+
+    #sessions-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 16px;
+    }
+
+    #empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 80px 0;
+      gap: 16px;
+      color: var(--muted);
+    }
+
+    #empty-state svg { width: 48px; height: 48px; opacity: .3; }
+    #empty-state h3 { font-size: 15px; font-weight: 600; color: var(--muted); }
+    #empty-state p { font-size: 13px; color: var(--muted2); text-align: center; max-width: 300px; }
+
+    /* ─── SESSION CARD ─────────────────────────────────────────────────────── */
+
+    .session-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      transition: border-color .2s;
+    }
+    .session-card:hover { border-color: var(--border2); }
+
+    .session-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .session-name {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text);
+      font-family: var(--mono);
+      letter-spacing: -.2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .badge {
-      font-size: 11px;
+      font-size: 10px;
       font-weight: 700;
-      padding: 3px 10px;
+      padding: 3px 9px;
       border-radius: 20px;
       text-transform: uppercase;
       letter-spacing: .5px;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
-    .badge-connected    { background: #1a3d2b; color: #25d366; }
-    .badge-qr           { background: #2d2a00; color: #fdd835; }
-    .badge-initializing { background: #1a2a3d; color: #42a5f5; }
-    .badge-authenticated{ background: #1a3d2b; color: #66bb6a; }
-    .badge-disconnected { background: #2a1a1a; color: #ef5350; }
-    .badge-error        { background: #2a1a1a; color: #ef5350; }
-    .badge-default      { background: #222; color: #888; }
+    .badge-connected     { background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-border); }
+    .badge-qr            { background: var(--yellow-bg); color: var(--yellow); border: 1px solid rgba(251,191,36,.2); }
+    .badge-initializing  { background: var(--blue-bg);   color: var(--blue);   border: 1px solid rgba(96,165,250,.2); }
+    .badge-authenticated { background: var(--blue-bg);   color: var(--blue);   border: 1px solid rgba(96,165,250,.2); }
+    .badge-disconnected  { background: var(--red-bg);    color: var(--red);    border: 1px solid rgba(248,113,113,.2); }
+    .badge-error         { background: var(--red-bg);    color: var(--red);    border: 1px solid rgba(248,113,113,.2); }
+    .badge-default       { background: var(--surface2);  color: var(--muted);  border: 1px solid var(--border2); }
 
-    .qr-container {
+    /* QR */
+    .qr-wrapper {
       background: #fff;
       border-radius: 10px;
-      padding: 12px;
+      padding: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
     }
-    .qr-container img { width: 100%; max-width: 220px; display: block; }
+    .qr-wrapper img { display: block; width: 100%; max-width: 210px; margin: 0 auto; }
 
     .qr-hint {
       font-size: 12px;
-      color: #666;
+      color: var(--muted);
       text-align: center;
-      line-height: 1.5;
+      line-height: 1.6;
     }
 
-    .connected-icon {
-      font-size: 48px;
-      text-align: center;
-    }
-
-    .card-footer {
+    /* Connected state */
+    .connected-state {
       display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 0 4px;
+    }
+
+    .connected-ring {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: var(--accent-bg);
+      border: 2px solid var(--accent-border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .connected-ring svg { width: 24px; height: 24px; }
+
+    .connected-phone {
+      font-size: 13px;
+      font-family: var(--mono);
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .connected-label {
+      font-size: 11px;
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    /* Loading state */
+    .loading-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 0;
+    }
+
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 2px solid var(--border2);
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-text { font-size: 12px; color: var(--muted); }
+
+    /* Webhook inline */
+    .session-webhook {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .session-webhook label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+
+    .webhook-row {
+      display: flex;
+      gap: 6px;
+    }
+
+    .webhook-row input {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 11px;
+      padding: 7px 10px;
+      outline: none;
+      transition: border-color .2s;
+      min-width: 0;
+    }
+    .webhook-row input:focus { border-color: var(--accent); }
+    .webhook-row input::placeholder { color: var(--muted2); }
+
+    .session-card-footer {
+      display: flex;
+      gap: 7px;
       justify-content: flex-end;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+      margin-top: -2px;
     }
 
-    .log {
-      background: #0d0d0d;
-      border: 1px solid #1a1a1a;
-      border-radius: 8px;
-      padding: 12px 16px;
-      font-size: 12px;
-      color: #555;
-      font-family: monospace;
-      max-height: 80px;
-      overflow-y: auto;
+    /* ─── CONFIG VIEW ──────────────────────────────────────────────────────── */
+
+    #view-config { display: none; }
+    #view-config.active { display: block; }
+
+    .config-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
     }
 
-    footer {
-      text-align: center;
+    .config-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
       padding: 24px;
-      color: #333;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .config-card.full { grid-column: 1 / -1; }
+
+    .config-card-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .config-card-title svg { width: 15px; height: 15px; color: var(--accent); }
+
+    .config-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .config-field label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+
+    .config-input-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .config-input-row input, .config-field input, .config-field textarea {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 9px 12px;
+      outline: none;
+      transition: border-color .2s;
+      width: 100%;
+    }
+    .config-input-row input:focus,
+    .config-field input:focus,
+    .config-field textarea:focus { border-color: var(--accent); }
+    .config-input-row input::placeholder,
+    .config-field input::placeholder { color: var(--muted2); }
+
+    /* Server status */
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .stat-row:last-child { border-bottom: none; }
+
+    .stat-label { font-size: 12px; color: var(--muted); }
+    .stat-value { font-size: 13px; font-family: var(--mono); font-weight: 500; color: var(--text); }
+    .stat-value.green { color: var(--accent); }
+
+    /* API reference table */
+    .api-table {
+      width: 100%;
+      border-collapse: collapse;
       font-size: 12px;
     }
+
+    .api-table th {
+      text-align: left;
+      padding: 8px 10px;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      border-bottom: 1px solid var(--border2);
+    }
+
+    .api-table td {
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      vertical-align: top;
+    }
+    .api-table tr:last-child td { border-bottom: none; }
+
+    .method-badge {
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+    .method-get  { background: rgba(96,165,250,.1); color: var(--blue); }
+    .method-post { background: var(--accent-bg); color: var(--accent); }
+    .method-del  { background: var(--red-bg); color: var(--red); }
+
+    .endpoint-path {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    /* API key masked */
+    .apikey-display {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: var(--radius-sm);
+      padding: 9px 12px;
+    }
+
+    .apikey-value {
+      flex: 1;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--muted);
+      letter-spacing: 2px;
+    }
+
+    /* ─── MODAL ────────────────────────────────────────────────────────────── */
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(4px);
+      z-index: 1000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-backdrop.open { display: flex; }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border2);
+      border-radius: 18px;
+      padding: 28px;
+      width: 400px;
+      max-width: calc(100vw - 40px);
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .modal-title {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -.3px;
+    }
+
+    .modal-body { display: flex; flex-direction: column; gap: 14px; }
+
+    .modal-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .modal-field label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+
+    .modal-field input {
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      padding: 10px 12px;
+      outline: none;
+      width: 100%;
+      transition: border-color .2s;
+    }
+    .modal-field input:focus { border-color: var(--accent); }
+
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+    .modal-danger-text {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    .modal-danger-text strong { color: var(--text); }
+
+    /* ─── TOAST ────────────────────────────────────────────────────────────── */
+
+    #toast-container {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 9000;
+      pointer-events: none;
+    }
+
+    .toast {
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 13px;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      pointer-events: auto;
+      animation: toastIn .25s cubic-bezier(.16,1,.3,1) forwards;
+      max-width: 340px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.4);
+    }
+
+    .toast.exit { animation: toastOut .2s ease forwards; }
+
+    @keyframes toastIn  { from { transform: translateX(20px); opacity: 0; } to { transform: none; opacity: 1; } }
+    @keyframes toastOut { from { transform: none; opacity: 1; } to { transform: translateX(20px); opacity: 0; } }
+
+    .toast-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .toast-success .toast-dot { background: var(--accent); }
+    .toast-error   .toast-dot { background: var(--red); }
+    .toast-info    .toast-dot { background: var(--blue); }
+
+    /* ─── SCROLLBAR ────────────────────────────────────────────────────────── */
+
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--muted2); }
+
+    /* ─── DIVIDER ──────────────────────────────────────────────────────────── */
+    .divider { height: 1px; background: var(--border); margin: 4px 0; }
   </style>
 </head>
 <body>
 
-<header>
-  <h1>Camille <span>Core</span></h1>
-  <div id="add-form">
-    <input type="text" id="session-name-input" placeholder="Nom de session (ex: default)" />
-    <button onclick="startSession()">+ Démarrer</button>
+<!-- ─── LOGIN ─────────────────────────────────────────────────────────────── -->
+<div id="login-screen">
+  <div id="login-box">
+    <div class="login-logo">
+      <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="40" height="40" rx="10" fill="#111114"/>
+        <circle cx="20" cy="20" r="13" stroke="#22c55e" stroke-width="2.5"/>
+        <circle cx="26.5" cy="13.5" r="2.5" fill="#111114"/>
+        <circle cx="20" cy="7" r="2" fill="#22c55e"/>
+        <circle cx="29.5" cy="11.2" r="2" fill="#22c55e"/>
+      </svg>
+      <div class="login-logo-text">Camille <span>Core</span></div>
+    </div>
+    <p class="login-subtitle">Entrez votre clé API pour accéder au tableau de bord</p>
+    <div class="login-field">
+      <label>API Key</label>
+      <input type="password" id="login-key-input" placeholder="camille-core-secret" autocomplete="off" />
+    </div>
+    <button id="login-btn" onclick="doLogin()">Connexion</button>
+    <div id="login-error"></div>
   </div>
-</header>
+</div>
 
-<main>
-  <div id="empty-state" style="display:none">
-    <div style="font-size:48px">📱</div>
-    <p>Aucune session active.<br>Entrez un nom et cliquez sur <strong>+ Démarrer</strong>.</p>
+<!-- ─── APP ───────────────────────────────────────────────────────────────── -->
+<div id="app">
+
+  <!-- Sidebar -->
+  <aside id="sidebar">
+    <div class="sidebar-logo">
+      <svg viewBox="0 0 30 30" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="30" height="30" rx="7" fill="#18181c"/>
+        <circle cx="15" cy="15" r="10" stroke="#22c55e" stroke-width="2"/>
+        <circle cx="20" cy="10" r="2" fill="#18181c"/>
+        <circle cx="15" cy="5.5" r="1.5" fill="#22c55e"/>
+        <circle cx="22" cy="8.5" r="1.5" fill="#22c55e"/>
+      </svg>
+      <div class="sidebar-logo-text">Camille <span>Core</span></div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-label">Gestion</div>
+      <div class="nav-item active" id="nav-sessions" onclick="switchView('sessions')">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="1" y="2" width="14" height="11" rx="2"/>
+          <path d="M5 15h6M8 13v2"/>
+        </svg>
+        Sessions
+        <span class="nav-badge" id="sessions-count-badge">0</span>
+      </div>
+
+      <div class="divider" style="margin: 8px 0;"></div>
+      <div class="nav-label">Système</div>
+
+      <div class="nav-item" id="nav-config" onclick="switchView('config')">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="8" cy="8" r="2.5"/>
+          <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06"/>
+        </svg>
+        Configuration
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="pulse-dot"></div>
+      <div class="sidebar-version" id="sidebar-version">v1.0.0</div>
+    </div>
+  </aside>
+
+  <!-- Content -->
+  <div id="content">
+
+    <!-- ── Sessions view ── -->
+    <div id="view-sessions" class="active">
+      <div class="content-header">
+        <div>
+          <div class="content-title">Sessions WhatsApp</div>
+          <div class="content-subtitle" id="sessions-subtitle">Chargement…</div>
+        </div>
+        <button class="btn btn-primary" onclick="openNewSessionModal()">
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M7 1v12M1 7h12"/>
+          </svg>
+          Nouvelle session
+        </button>
+      </div>
+      <div class="content-body">
+        <div id="empty-state">
+          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="4" y="8" width="40" height="32" rx="4"/>
+            <path d="M16 40v4M32 40v4M12 44h24M24 22v4M24 30h.01"/>
+          </svg>
+          <h3>Aucune session active</h3>
+          <p>Créez une première session pour commencer à connecter un numéro WhatsApp.</p>
+        </div>
+        <div id="sessions-grid"></div>
+      </div>
+    </div>
+
+    <!-- ── Config view ── -->
+    <div id="view-config">
+      <div class="content-header">
+        <div>
+          <div class="content-title">Configuration</div>
+          <div class="content-subtitle">Webhook global, statut serveur et référence API</div>
+        </div>
+      </div>
+      <div class="content-body">
+        <div class="config-grid">
+
+          <!-- Webhook global -->
+          <div class="config-card">
+            <div class="config-card-title">
+              <svg viewBox="0 0 15 15" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M7.5 1C4 1 1 4 1 7.5S4 14 7.5 14 14 11 14 7.5 11 1 7.5 1z"/>
+                <path d="M7.5 5v5M5 7.5h5"/>
+              </svg>
+              Webhook global
+            </div>
+            <div class="config-field">
+              <label>URL de destination</label>
+              <div class="config-input-row">
+                <input type="url" id="global-webhook-input" placeholder="https://votre-n8n.com/webhook/..." />
+                <button class="btn btn-ghost btn-sm" onclick="saveGlobalWebhook()">Sauvegarder</button>
+              </div>
+            </div>
+            <div style="font-size:12px;color:var(--muted);line-height:1.6">
+              Utilisé pour toutes les sessions sans webhook spécifique. Peut être surchargé par session.
+            </div>
+          </div>
+
+          <!-- API Key -->
+          <div class="config-card">
+            <div class="config-card-title">
+              <svg viewBox="0 0 15 15" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="5.5" cy="9.5" r="3.5"/>
+                <path d="M9 6l5-5M11 3l2 2"/>
+              </svg>
+              Authentification
+            </div>
+            <div class="config-field">
+              <label>API Key active</label>
+              <div class="apikey-display">
+                <span class="apikey-value" id="apikey-display">••••••••••••••••••</span>
+                <button class="btn btn-ghost btn-sm btn-icon" onclick="toggleApiKeyVisible()" title="Afficher / masquer">
+                  <svg id="eye-icon" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1 7s2-4 6-4 6 4 6 4-2 4-6 4-6-4-6-4z"/>
+                    <circle cx="7" cy="7" r="1.5"/>
+                  </svg>
+                </button>
+                <button class="btn btn-ghost btn-sm btn-icon" onclick="copyApiKey()" title="Copier">
+                  <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="5" y="5" width="8" height="8" rx="1.5"/>
+                    <path d="M3 9H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v1"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div style="font-size:12px;color:var(--muted);line-height:1.6">
+              En-tête HTTP requis&nbsp;: <code style="font-family:var(--mono);color:var(--blue)">X-Api-Key</code>
+            </div>
+          </div>
+
+          <!-- Server status -->
+          <div class="config-card">
+            <div class="config-card-title">
+              <svg viewBox="0 0 15 15" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="1" y="3" width="13" height="4" rx="1"/>
+                <rect x="1" y="9" width="13" height="4" rx="1"/>
+                <circle cx="11.5" cy="5" r=".75" fill="#22c55e" stroke="none"/>
+                <circle cx="11.5" cy="11" r=".75" fill="#22c55e" stroke="none"/>
+              </svg>
+              Statut serveur
+            </div>
+            <div>
+              <div class="stat-row">
+                <span class="stat-label">Version</span>
+                <span class="stat-value" id="info-version">—</span>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label">Uptime</span>
+                <span class="stat-value" id="info-uptime">—</span>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label">Sessions actives</span>
+                <span class="stat-value" id="info-sessions">—</span>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label">Connectées</span>
+                <span class="stat-value green" id="info-connected">—</span>
+              </div>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="refreshServerInfo()" style="align-self:flex-start">
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 7A6 6 0 0 1 12.95 5M13 7a6 6 0 0 1-11.95 2"/>
+                <path d="M13 3v3h-3M1 11v-3h3"/>
+              </svg>
+              Actualiser
+            </button>
+          </div>
+
+          <!-- API Reference -->
+          <div class="config-card full">
+            <div class="config-card-title">
+              <svg viewBox="0 0 15 15" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M5 3H3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1h-2M5 3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1M5 3h5"/>
+              </svg>
+              Référence API
+            </div>
+            <table class="api-table">
+              <thead>
+                <tr>
+                  <th>Méthode</th>
+                  <th>Endpoint</th>
+                  <th>Description</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="method-badge method-post">POST</span></td>
+                  <td class="endpoint-path">/api/sessions/start</td>
+                  <td>Créer et démarrer une session</td>
+                </tr>
+                <tr>
+                  <td><span class="method-badge method-get">GET</span></td>
+                  <td class="endpoint-path">/api/sessions/:name/status</td>
+                  <td>Statut d'une session (CONNECTED, QR_READY…)</td>
+                </tr>
+                <tr>
+                  <td><span class="method-badge method-get">GET</span></td>
+                  <td class="endpoint-path">/api/sessions/:name/qr</td>
+                  <td>QR code en base64 (disponible si QR_READY)</td>
+                </tr>
+                <tr>
+                  <td><span class="method-badge method-del">DELETE</span></td>
+                  <td class="endpoint-path">/api/sessions/:name/stop</td>
+                  <td>Arrêter une session (conserve l'auth locale)</td>
+                </tr>
+                <tr>
+                  <td><span class="method-badge method-del">DELETE</span></td>
+                  <td class="endpoint-path">/api/sessions/:name/reset</td>
+                  <td>Arrêter et supprimer les fichiers d'auth</td>
+                </tr>
+                <tr>
+                  <td><span class="method-badge method-post">POST</span></td>
+                  <td class="endpoint-path">/api/sendText</td>
+                  <td>Envoyer un message texte</td>
+                </tr>
+                <tr>
+                  <td><span class="method-badge method-post">POST</span></td>
+                  <td class="endpoint-path">/api/sendVoice</td>
+                  <td>Envoyer un message vocal (URL)</td>
+                </tr>
+                <tr>
+                  <td><span class="method-badge method-post">POST</span></td>
+                  <td class="endpoint-path">/api/sendVideo</td>
+                  <td>Envoyer une vidéo (URL)</td>
+                </tr>
+                <tr>
+                  <td><span class="method-badge method-post">POST</span></td>
+                  <td class="endpoint-path">/api/sendFile</td>
+                  <td>Envoyer un fichier générique (URL)</td>
+                </tr>
+                <tr>
+                  <td><span class="method-badge method-post">POST</span></td>
+                  <td class="endpoint-path">/api/startTyping</td>
+                  <td>Activer l'indicateur "en train d'écrire"</td>
+                </tr>
+                <tr>
+                  <td><span class="method-badge method-post">POST</span></td>
+                  <td class="endpoint-path">/api/stopTyping</td>
+                  <td>Désactiver l'indicateur "en train d'écrire"</td>
+                </tr>
+                <tr>
+                  <td><span class="method-badge method-get">GET</span></td>
+                  <td class="endpoint-path">/api/config/webhooks</td>
+                  <td>Lire la config webhooks (global + par session)</td>
+                </tr>
+                <tr>
+                  <td><span class="method-badge method-post">POST</span></td>
+                  <td class="endpoint-path">/api/config/webhooks</td>
+                  <td>Mettre à jour un webhook (global ou par session)</td>
+                </tr>
+                <tr>
+                  <td><span class="method-badge method-get">GET</span></td>
+                  <td class="endpoint-path">/api/server/info</td>
+                  <td>Infos serveur (version, uptime, sessions)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
   </div>
-  <div id="sessions-grid"></div>
-</main>
+</div>
 
-<footer>Camille Core v1.0 — whatsapp-web.js</footer>
+<!-- ─── MODAL Nouvelle session ─────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="modal-new-session">
+  <div class="modal">
+    <div class="modal-title">Nouvelle session</div>
+    <div class="modal-body">
+      <div class="modal-field">
+        <label>Nom de session</label>
+        <input type="text" id="new-session-name" placeholder="ex : default, agent1, bot-ventes…"
+               onkeydown="if(event.key==='Enter') confirmNewSession()" autocomplete="off" />
+      </div>
+      <div class="modal-field">
+        <label>Webhook (optionnel)</label>
+        <input type="url" id="new-session-webhook" placeholder="https://votre-n8n.com/webhook/…"
+               autocomplete="off" />
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modal-new-session')">Annuler</button>
+      <button class="btn btn-primary" onclick="confirmNewSession()">
+        <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M7 1v12M1 7h12"/>
+        </svg>
+        Démarrer
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── MODAL Confirmer arrêt ──────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="modal-confirm-stop">
+  <div class="modal">
+    <div class="modal-title">Arrêter la session</div>
+    <div class="modal-body">
+      <p class="modal-danger-text">
+        Voulez-vous arrêter la session <strong id="stop-session-name-display">—</strong> ?<br>
+        Les fichiers d'authentification seront conservés, vous pourrez vous reconnecter sans rescanner le QR.
+      </p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modal-confirm-stop')">Annuler</button>
+      <button class="btn btn-danger" onclick="confirmStop()">Arrêter</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── MODAL Confirmer reset ──────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="modal-confirm-reset">
+  <div class="modal">
+    <div class="modal-title">Réinitialiser la session</div>
+    <div class="modal-body">
+      <p class="modal-danger-text">
+        Voulez-vous réinitialiser la session <strong id="reset-session-name-display">—</strong> ?<br>
+        Les fichiers d'authentification seront <strong>supprimés</strong>. Un nouveau QR sera généré.
+      </p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modal-confirm-reset')">Annuler</button>
+      <button class="btn btn-danger" onclick="confirmReset()">Réinitialiser</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── TOASTS ─────────────────────────────────────────────────────────────── -->
+<div id="toast-container"></div>
 
 <script>
-  const API_KEY = prompt('Entrez votre API Key Camille Core :') || '';
-  const grid    = document.getElementById('sessions-grid');
-  const empty   = document.getElementById('empty-state');
+  // ── State ──────────────────────────────────────────────────────────────────
+  let API_KEY = '';
+  let socket  = null;
+  let pendingStopName  = null;
+  let pendingResetName = null;
+  let apiKeyVisible = false;
+  let serverInfoInterval = null;
 
-  // ── Socket.io ────────────────────────────────────────────────────────────
-
-  const socket = io();
-
-  socket.on('init', (sessions) => {
-    grid.innerHTML = '';
-    sessions.forEach(renderCard);
-    syncEmpty();
+  // ── Login ──────────────────────────────────────────────────────────────────
+  document.getElementById('login-key-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doLogin();
   });
 
-  socket.on('session:update', ({ name, status, qr }) => {
-    const existing = document.getElementById(`card-${name}`);
-    if (existing) existing.remove();
-    renderCard({ name, status, qr });
-    syncEmpty();
-  });
+  async function doLogin() {
+    const key = document.getElementById('login-key-input').value.trim();
+    if (!key) {
+      document.getElementById('login-error').textContent = 'Veuillez entrer une clé API.';
+      return;
+    }
+    document.getElementById('login-btn').textContent = 'Vérification…';
+    document.getElementById('login-error').textContent = '';
 
-  socket.on('session:removed', ({ name }) => {
-    const el = document.getElementById(`card-${name}`);
-    if (el) el.remove();
-    syncEmpty();
-  });
+    try {
+      const res = await fetch('/api/server/info', { headers: { 'X-Api-Key': key } });
+      if (!res.ok) throw new Error('Clé API invalide');
+      API_KEY = key;
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('app').classList.add('visible');
+      initApp();
+    } catch (e) {
+      document.getElementById('login-error').textContent = e.message;
+      document.getElementById('login-btn').textContent = 'Connexion';
+    }
+  }
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Init ───────────────────────────────────────────────────────────────────
+  function initApp() {
+    initSocket();
+    refreshServerInfo();
+    loadWebhookConfig();
+    serverInfoInterval = setInterval(refreshServerInfo, 30000);
+  }
 
+  // ── Socket.io ──────────────────────────────────────────────────────────────
+  function initSocket() {
+    socket = io({ auth: { apiKey: API_KEY } });
+
+    socket.on('connect', () => {});
+
+    socket.on('init', (sessions) => {
+      document.getElementById('sessions-grid').innerHTML = '';
+      sessions.forEach(renderCard);
+      syncEmpty();
+      updateSessionBadge();
+    });
+
+    socket.on('session:update', ({ name, status, qr }) => {
+      const existing = document.getElementById(`card-${CSS.escape(name)}`);
+      if (existing) existing.remove();
+      renderCard({ name, status, qr });
+      syncEmpty();
+      updateSessionBadge();
+    });
+
+    socket.on('session:removed', ({ name }) => {
+      const el = document.getElementById(`card-${CSS.escape(name)}`);
+      if (el) el.remove();
+      syncEmpty();
+      updateSessionBadge();
+    });
+  }
+
+  // ── Views ──────────────────────────────────────────────────────────────────
+  function switchView(view) {
+    document.getElementById('view-sessions').classList.remove('active');
+    document.getElementById('view-config').classList.remove('active');
+    document.getElementById('nav-sessions').classList.remove('active');
+    document.getElementById('nav-config').classList.remove('active');
+
+    document.getElementById(`view-${view}`).classList.add('active');
+    document.getElementById(`nav-${view}`).classList.add('active');
+
+    if (view === 'config') {
+      refreshServerInfo();
+      loadWebhookConfig();
+    }
+  }
+
+  // ── Session count badge ────────────────────────────────────────────────────
+  function updateSessionBadge() {
+    const count = document.getElementById('sessions-grid').children.length;
+    document.getElementById('sessions-count-badge').textContent = count;
+    const s = count === 0 ? 'Aucune session active'
+            : count === 1 ? '1 session active'
+            : `${count} sessions actives`;
+    document.getElementById('sessions-subtitle').textContent = s;
+  }
+
+  // ── Render session card ────────────────────────────────────────────────────
   function badgeClass(status) {
     const map = {
       CONNECTED:     'badge-connected',
@@ -244,78 +1300,311 @@
     return map[status] || 'badge-default';
   }
 
-  function renderCard({ name, status, qr }) {
+  function statusLabel(status) {
+    const map = {
+      CONNECTED:     'Connecté',
+      QR_READY:      'Scan QR',
+      INITIALIZING:  'Initialisation',
+      AUTHENTICATED: 'Authentifié',
+      DISCONNECTED:  'Déconnecté',
+      ERROR:         'Erreur',
+      AUTH_FAILURE:  'Échec auth',
+    };
+    return map[status] || status;
+  }
+
+  function renderCard({ name, status, qr, phone }) {
     const card = document.createElement('div');
-    card.className = 'card';
-    card.id = `card-${name}`;
+    card.className = 'session-card';
+    card.id = `card-${CSS.escape(name)}`;
 
     let body = '';
 
     if (status === 'QR_READY' && qr) {
       body = `
-        <div class="qr-container">
-          <img src="${qr}" alt="QR Code ${name}" />
+        <div class="qr-wrapper">
+          <img src="${qr}" alt="QR ${name}" />
         </div>
-        <p class="qr-hint">Ouvrez WhatsApp → Appareils liés → Scanner ce QR</p>
+        <p class="qr-hint">Ouvrez WhatsApp → Appareils liés → Lier un appareil</p>
       `;
     } else if (status === 'CONNECTED') {
-      body = `<div class="connected-icon">✅</div>
-              <p class="qr-hint" style="color:#25d366;text-align:center;font-weight:700">Connecté et prêt</p>`;
+      body = `
+        <div class="connected-state">
+          <div class="connected-ring">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.8 19.79 19.79 0 01.12 1.18 2 2 0 012.1 0h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.09 7.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 14.92z"/>
+            </svg>
+          </div>
+          <div class="connected-phone">${phone ? '+' + phone : 'Numéro connecté'}</div>
+          <div class="connected-label">Prêt à envoyer des messages</div>
+        </div>
+      `;
     } else if (status === 'INITIALIZING' || status === 'AUTHENTICATED') {
-      body = `<p class="qr-hint" style="text-align:center">⏳ Initialisation en cours…<br>Le QR apparaîtra automatiquement.</p>`;
+      body = `
+        <div class="loading-state">
+          <div class="spinner"></div>
+          <div class="loading-text">Initialisation en cours — QR disponible dans quelques secondes…</div>
+        </div>
+      `;
+    } else if (status === 'DISCONNECTED') {
+      body = `
+        <div class="loading-state">
+          <div class="spinner" style="border-top-color:var(--yellow)"></div>
+          <div class="loading-text" style="color:var(--yellow)">Reconnexion automatique…</div>
+        </div>
+      `;
     } else {
-      body = `<p class="qr-hint" style="text-align:center;color:#ef5350">
-                ${status === 'DISCONNECTED' ? '🔌 Déconnecté — reconnexion auto dans 10s' : '❌ ' + status}
-              </p>`;
+      body = `
+        <div style="padding:12px 0;text-align:center;font-size:12px;color:var(--red)">${status}</div>
+      `;
     }
 
     card.innerHTML = `
-      <div class="card-header">
-        <span class="card-name">${name}</span>
-        <span class="badge ${badgeClass(status)}">${status}</span>
+      <div class="session-card-header">
+        <span class="session-name">${escHtml(name)}</span>
+        <span class="badge ${badgeClass(status)}">${statusLabel(status)}</span>
       </div>
       ${body}
-      <div class="card-footer">
-        <button class="danger" onclick="stopSession('${name}')">Arrêter</button>
+      <div class="session-webhook">
+        <label>Webhook</label>
+        <div class="webhook-row">
+          <input type="url" id="wh-${escHtml(name)}" placeholder="URL n8n / Make / Zapier…" />
+          <button class="btn btn-ghost btn-sm" onclick="saveSessionWebhook('${escHtml(name)}')">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <path d="M2 7l3.5 3.5L12 3"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="session-card-footer">
+        <button class="btn btn-ghost btn-sm" onclick="openResetModal('${escHtml(name)}')">
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <path d="M1 7A6 6 0 0 1 12.95 5M13 7a6 6 0 0 1-11.95 2"/>
+            <path d="M13 3v3h-3M1 11v-3h3"/>
+          </svg>
+          Réinitialiser
+        </button>
+        <button class="btn btn-danger btn-sm" onclick="openStopModal('${escHtml(name)}')">
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <rect x="3" y="3" width="8" height="8" rx="1"/>
+          </svg>
+          Arrêter
+        </button>
       </div>
     `;
 
-    // Insérer en tête de grille
-    grid.prepend(card);
+    document.getElementById('sessions-grid').prepend(card);
+
+    // Load webhook from config
+    loadSessionWebhookValue(name);
   }
 
   function syncEmpty() {
-    const hasCards = grid.children.length > 0;
-    empty.style.display = hasCards ? 'none' : 'block';
+    const count = document.getElementById('sessions-grid').children.length;
+    document.getElementById('empty-state').style.display = count ? 'none' : 'flex';
+    updateSessionBadge();
   }
 
-  // ── Actions ───────────────────────────────────────────────────────────────
-
-  async function startSession() {
-    const name = document.getElementById('session-name-input').value.trim();
-    if (!name) return alert('Entrez un nom de session');
-    document.getElementById('session-name-input').value = '';
-
-    const res = await fetch('/api/sessions/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Api-Key': API_KEY },
-      body: JSON.stringify({ name }),
-    });
-    const data = await res.json();
-    if (!data.success) alert('Erreur: ' + (data.error || 'inconnue'));
+  function escHtml(str) {
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
-  async function stopSession(name) {
-    if (!confirm(`Arrêter la session "${name}" ?`)) return;
-    await fetch(`/api/sessions/${name}/stop`, {
-      method: 'DELETE',
+  // ── New session modal ──────────────────────────────────────────────────────
+  function openNewSessionModal() {
+    document.getElementById('new-session-name').value = '';
+    document.getElementById('new-session-webhook').value = '';
+    openModal('modal-new-session');
+    setTimeout(() => document.getElementById('new-session-name').focus(), 80);
+  }
+
+  async function confirmNewSession() {
+    const name    = document.getElementById('new-session-name').value.trim();
+    const webhook = document.getElementById('new-session-webhook').value.trim();
+    if (!name) { toast('Entrez un nom de session', 'error'); return; }
+
+    closeModal('modal-new-session');
+
+    try {
+      const res = await apiFetch('/api/sessions/start', { method: 'POST', body: { name } });
+      if (!res.success) throw new Error(res.error || 'Erreur inconnue');
+
+      if (webhook) {
+        await apiFetch('/api/config/webhooks', { method: 'POST', body: { session: name, url: webhook } });
+      }
+      toast(`Session "${name}" démarrée`, 'success');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  // ── Stop modal ─────────────────────────────────────────────────────────────
+  function openStopModal(name) {
+    pendingStopName = name;
+    document.getElementById('stop-session-name-display').textContent = name;
+    openModal('modal-confirm-stop');
+  }
+
+  async function confirmStop() {
+    if (!pendingStopName) return;
+    const name = pendingStopName;
+    closeModal('modal-confirm-stop');
+    try {
+      await apiFetch(`/api/sessions/${encodeURIComponent(name)}/stop`, { method: 'DELETE' });
+      toast(`Session "${name}" arrêtée`, 'info');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+    pendingStopName = null;
+  }
+
+  // ── Reset modal ────────────────────────────────────────────────────────────
+  function openResetModal(name) {
+    pendingResetName = name;
+    document.getElementById('reset-session-name-display').textContent = name;
+    openModal('modal-confirm-reset');
+  }
+
+  async function confirmReset() {
+    if (!pendingResetName) return;
+    const name = pendingResetName;
+    closeModal('modal-confirm-reset');
+    try {
+      await apiFetch(`/api/sessions/${encodeURIComponent(name)}/reset`, { method: 'DELETE' });
+      toast(`Session "${name}" réinitialisée`, 'info');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+    pendingResetName = null;
+  }
+
+  // ── Webhooks ───────────────────────────────────────────────────────────────
+  async function loadWebhookConfig() {
+    try {
+      const data = await apiFetch('/api/config/webhooks');
+      if (data.global) {
+        document.getElementById('global-webhook-input').value = data.global;
+      }
+      // Per-session values are loaded per-card
+      if (data.sessions) {
+        Object.entries(data.sessions).forEach(([session, url]) => {
+          const el = document.getElementById(`wh-${escHtml(session)}`);
+          if (el) el.value = url;
+        });
+      }
+    } catch {}
+  }
+
+  async function loadSessionWebhookValue(name) {
+    try {
+      const data = await apiFetch('/api/config/webhooks');
+      const el = document.getElementById(`wh-${escHtml(name)}`);
+      if (el && data.sessions && data.sessions[name]) {
+        el.value = data.sessions[name];
+      }
+    } catch {}
+  }
+
+  async function saveGlobalWebhook() {
+    const url = document.getElementById('global-webhook-input').value.trim();
+    try {
+      await apiFetch('/api/config/webhooks', { method: 'POST', body: { session: '__global__', url } });
+      toast('Webhook global sauvegardé', 'success');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  async function saveSessionWebhook(name) {
+    const el = document.getElementById(`wh-${escHtml(name)}`);
+    const url = el ? el.value.trim() : '';
+    try {
+      await apiFetch('/api/config/webhooks', { method: 'POST', body: { session: name, url } });
+      toast(`Webhook de "${name}" sauvegardé`, 'success');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  // ── Server info ────────────────────────────────────────────────────────────
+  async function refreshServerInfo() {
+    try {
+      const data = await apiFetch('/api/server/info');
+      document.getElementById('info-version').textContent  = data.version  || '—';
+      document.getElementById('info-uptime').textContent   = formatUptime(data.uptime);
+      document.getElementById('info-sessions').textContent = data.sessions ?? '—';
+      document.getElementById('info-connected').textContent= data.connected ?? '—';
+      document.getElementById('sidebar-version').textContent = `v${data.version || '1.0.0'}`;
+    } catch {}
+  }
+
+  function formatUptime(ms) {
+    if (!ms && ms !== 0) return '—';
+    let s = Math.floor(ms / 1000);
+    const d = Math.floor(s / 86400); s %= 86400;
+    const h = Math.floor(s / 3600);  s %= 3600;
+    const m = Math.floor(s / 60);    s %= 60;
+    if (d) return `${d}j ${h}h ${m}m`;
+    if (h) return `${h}h ${m}m ${s}s`;
+    if (m) return `${m}m ${s}s`;
+    return `${s}s`;
+  }
+
+  // ── API Key display ────────────────────────────────────────────────────────
+  function toggleApiKeyVisible() {
+    apiKeyVisible = !apiKeyVisible;
+    document.getElementById('apikey-display').textContent = apiKeyVisible
+      ? API_KEY
+      : '••••••••••••••••••';
+    document.getElementById('eye-icon').innerHTML = apiKeyVisible
+      ? `<path d="M1 7s2-4 6-4 6 4 6 4-2 4-6 4-6-4-6-4z"/><circle cx="7" cy="7" r="1.5"/><line x1="1" y1="1" x2="13" y2="13"/>`
+      : `<path d="M1 7s2-4 6-4 6 4 6 4-2 4-6 4-6-4-6-4z"/><circle cx="7" cy="7" r="1.5"/>`;
+  }
+
+  function copyApiKey() {
+    navigator.clipboard.writeText(API_KEY).then(() => toast('Clé API copiée', 'success'));
+  }
+
+  // ── Modal helpers ──────────────────────────────────────────────────────────
+  function openModal(id) {
+    document.getElementById(id).classList.add('open');
+  }
+  function closeModal(id) {
+    document.getElementById(id).classList.remove('open');
+  }
+
+  document.querySelectorAll('.modal-backdrop').forEach(el => {
+    el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); });
+  });
+
+  // ── Toasts ─────────────────────────────────────────────────────────────────
+  function toast(msg, type = 'info') {
+    const container = document.getElementById('toast-container');
+    const el = document.createElement('div');
+    el.className = `toast toast-${type}`;
+    el.innerHTML = `<div class="toast-dot"></div><span>${escHtml(msg)}</span>`;
+    container.appendChild(el);
+    setTimeout(() => {
+      el.classList.add('exit');
+      el.addEventListener('animationend', () => el.remove());
+    }, 3500);
+  }
+
+  // ── API helper ─────────────────────────────────────────────────────────────
+  async function apiFetch(path, { method = 'GET', body } = {}) {
+    const opts = {
+      method,
       headers: { 'X-Api-Key': API_KEY },
-    });
+    };
+    if (body) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
+    const res = await fetch(path, opts);
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
   }
-
-  // ── Init ──────────────────────────────────────────────────────────────────
-
-  syncEmpty();
 </script>
 </body>
 </html>
