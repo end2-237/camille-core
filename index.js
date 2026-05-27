@@ -21,8 +21,12 @@ const PORT          = process.env.PORT          || 3000;
 const API_KEY       = process.env.API_KEY       || 'camille-core-secret';
 const N8N_WEBHOOK   = process.env.N8N_WEBHOOK_URL || '';
 const SESSIONS_DIR  = process.env.SESSIONS_DIR  || './sessions';
+const MEDIA_DIR     = path.join(__dirname, 'public', 'media');
 const VERSION       = '1.0.0';
 const START_TIME    = Date.now();
+
+// Créer le dossier media au démarrage
+if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
 // ── Webhook config (persisted in webhooks.json) ───────────────────────────────
 const WEBHOOKS_FILE = path.join(__dirname, 'webhooks.json');
@@ -473,6 +477,43 @@ app.post('/api/config/webhooks', auth, (req, res) => {
   }
   saveWebhookConfig(webhookConfig);
   res.json({ success: true });
+});
+
+// ── Media Storage ─────────────────────────────────────────────────────────────
+// POST /api/media/upload  { name, data (base64), mimeType }
+// DELETE /api/media/:filename
+
+app.post('/api/media/upload', auth, (req, res) => {
+  const { name, data, mimeType } = req.body;
+  if (!name || !data) return res.status(400).json({ error: 'name et data (base64) requis' });
+
+  // Assainir le nom de fichier
+  const safe = name.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.{2,}/g, '_');
+  if (!safe) return res.status(400).json({ error: 'nom invalide' });
+
+  try {
+    const filePath = path.join(MEDIA_DIR, safe);
+    fs.writeFileSync(filePath, Buffer.from(data, 'base64'));
+    const baseUrl = (process.env.CORE_PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+    const url = `${baseUrl}/media/${safe}`;
+    console.log(`[media] upload → ${safe} (${mimeType || '?'})`);
+    res.json({ url, filename: safe });
+  } catch (e) {
+    console.error('[media] upload error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/media/:filename', auth, (req, res) => {
+  const safe = req.params.filename.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.{2,}/g, '_');
+  const filePath = path.join(MEDIA_DIR, safe);
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    console.log(`[media] delete → ${safe}`);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ── Socket.io ─────────────────────────────────────────────────────────────────
