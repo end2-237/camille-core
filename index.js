@@ -382,14 +382,22 @@ app.post('/api/sendVoice', auth, async (req, res) => {
     const id   = formatChatId(chatId);
     const chat = await cl.getChatById(id);
     const media = await resolveMedia(file.url);
-    // Forcer le rendu "note vocale" dans WhatsApp
-    media.mimetype = 'audio/ogg; codecs=opus';
 
     await chat.sendStateRecording();
     await randomDelay(1500, 3000);
-    await cl.sendMessage(id, media, { sendAudioAsVoice: true });
-    await chat.clearState();
 
+    try {
+      // Essai 1 : note vocale PTT (nécessite OGG/Opus)
+      const mediaPtt = await resolveMedia(file.url);
+      mediaPtt.mimetype = 'audio/ogg; codecs=opus';
+      await cl.sendMessage(id, mediaPtt, { sendAudioAsVoice: true });
+    } catch (pttErr) {
+      // Fallback : fichier audio classique si PTT échoue
+      console.warn('[sendVoice] PTT échoué (' + pttErr.message + '), envoi audio normal');
+      await cl.sendMessage(id, media);
+    }
+
+    await chat.clearState();
     res.json({ success: true });
   } catch (err) {
     console.error('[sendVoice]', err.message);
