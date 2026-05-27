@@ -371,64 +371,71 @@ function resolveMedia(url) {
   return MessageMedia.fromUrl(url, { unsafeMime: true });
 }
 
+// ── Helper : normalise @lid → @c.us pour les envois media ────────────────────
+// whatsapp-web.js supporte @lid pour le texte mais pas pour les médias
+function normalizeMediaId(id) {
+  if (!id) return id;
+  return id.replace(/@lid$/, '@c.us');
+}
+
 // POST /api/sendVoice  { chatId, session, file: { url } }
-// Utilise chat.sendMessage() pour éviter les problèmes de format @lid avec cl.sendMessage()
 app.post('/api/sendVoice', auth, async (req, res) => {
   let { chatId, session = 'default', file } = req.body;
   if (!chatId) return res.status(400).json({ error: 'chatId requis' });
   if (!file?.url) return res.json({ success: true, skipped: true, reason: 'Aucune URL audio configurée' });
 
   try {
-    const cl   = getClient(session);
-    const id   = formatChatId(chatId);
-    const chat = await cl.getChatById(id);
+    const cl      = getClient(session);
+    const rawId   = formatChatId(chatId);
+    const mediaId = normalizeMediaId(rawId);   // @lid → @c.us pour media
+    console.log('[sendVoice] rawId:', rawId, '→ mediaId:', mediaId, 'url:', file.url);
 
+    // sendStateRecording via @lid (fonctionne)
+    const chat = await cl.getChatById(rawId);
     await chat.sendStateRecording();
     await randomDelay(1500, 3000);
 
     try {
-      // Essai 1 : note vocale PTT (nécessite OGG/Opus)
-      // chat.sendMessage() utilise l'ID interne du chat, évite les @lid
+      // Essai PTT (OGG/Opus) via @c.us
       const mediaPtt = await resolveMedia(file.url);
       mediaPtt.mimetype = 'audio/ogg; codecs=opus';
-      await chat.sendMessage(mediaPtt, { sendAudioAsVoice: true });
-      console.log('[sendVoice] PTT envoyé:', chatId);
+      await cl.sendMessage(mediaId, mediaPtt, { sendAudioAsVoice: true });
+      console.log('[sendVoice] PTT envoyé ✓');
     } catch (pttErr) {
-      // Fallback : fichier audio classique si PTT échoue
-      console.warn('[sendVoice] PTT échoué (' + pttErr.message + '), audio normal');
+      console.warn('[sendVoice] PTT échoué:', pttErr.message, '→ audio normal');
       const media = await resolveMedia(file.url);
-      await chat.sendMessage(media);
-      console.log('[sendVoice] audio normal envoyé:', chatId);
+      await cl.sendMessage(mediaId, media);
+      console.log('[sendVoice] audio normal envoyé ✓');
     }
 
     await chat.clearState();
     res.json({ success: true });
   } catch (err) {
-    console.error('[sendVoice] ERREUR:', err.message);
+    console.error('[sendVoice] ERREUR FINALE:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
 // POST /api/sendVideo  { chatId, session, file: { url }, caption }
-// Utilise chat.sendMessage() pour éviter les problèmes de format @lid
 app.post('/api/sendVideo', auth, async (req, res) => {
   let { chatId, session = 'default', file, caption = '' } = req.body;
   if (!chatId) return res.status(400).json({ error: 'chatId requis' });
   if (!file?.url) return res.json({ success: true, skipped: true, reason: 'Aucune URL vidéo configurée' });
 
   try {
-    const cl   = getClient(session);
-    const id   = formatChatId(chatId);
-    const chat = await cl.getChatById(id);
-    const media = await resolveMedia(file.url);
+    const cl      = getClient(session);
+    const rawId   = formatChatId(chatId);
+    const mediaId = normalizeMediaId(rawId);   // @lid → @c.us pour media
+    console.log('[sendVideo] rawId:', rawId, '→ mediaId:', mediaId, 'url:', file.url);
 
+    const media = await resolveMedia(file.url);
     await randomDelay(500, 1500);
-    await chat.sendMessage(media, { caption });
-    console.log('[sendVideo] envoyé:', chatId);
+    await cl.sendMessage(mediaId, media, { caption });
+    console.log('[sendVideo] envoyé ✓');
 
     res.json({ success: true });
   } catch (err) {
-    console.error('[sendVideo] ERREUR:', err.message);
+    console.error('[sendVideo] ERREUR FINALE:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
