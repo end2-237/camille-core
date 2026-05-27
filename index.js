@@ -355,21 +355,16 @@ app.post('/api/sendText', auth, async (req, res) => {
 });
 
 // ── Helper : résout une URL en MessageMedia (local si possible) ───────────────
+// Détecte automatiquement les fichiers locaux via le pattern /media/filename
+// sans dépendance à CORE_PUBLIC_URL
 function resolveMedia(url) {
-  const publicBase = (process.env.CORE_PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
-  const localPrefixes = [
-    publicBase + '/media/',
-    `http://localhost:${PORT}/media/`,
-    `https://localhost:${PORT}/media/`,
-  ];
-  for (const prefix of localPrefixes) {
-    if (url.startsWith(prefix)) {
-      const filename = url.slice(prefix.length).split('?')[0];
-      const filePath = path.join(MEDIA_DIR, filename);
-      if (fs.existsSync(filePath)) {
-        console.log('[media] lecture locale:', filePath);
-        return MessageMedia.fromFilePath(filePath);
-      }
+  const mediaMatch = url.match(/\/media\/([^/?#]+)/);
+  if (mediaMatch) {
+    const filename = mediaMatch[1];
+    const filePath = path.join(MEDIA_DIR, filename);
+    if (fs.existsSync(filePath)) {
+      console.log('[media] lecture locale:', filePath);
+      return MessageMedia.fromFilePath(filePath);
     }
   }
   console.log('[media] téléchargement URL:', url);
