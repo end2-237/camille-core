@@ -354,6 +354,28 @@ app.post('/api/sendText', auth, async (req, res) => {
   }
 });
 
+// ── Helper : résout une URL en MessageMedia (local si possible) ───────────────
+function resolveMedia(url) {
+  const publicBase = (process.env.CORE_PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+  const localPrefixes = [
+    publicBase + '/media/',
+    `http://localhost:${PORT}/media/`,
+    `https://localhost:${PORT}/media/`,
+  ];
+  for (const prefix of localPrefixes) {
+    if (url.startsWith(prefix)) {
+      const filename = url.slice(prefix.length).split('?')[0];
+      const filePath = path.join(MEDIA_DIR, filename);
+      if (fs.existsSync(filePath)) {
+        console.log('[media] lecture locale:', filePath);
+        return MessageMedia.fromFilePath(filePath);
+      }
+    }
+  }
+  console.log('[media] téléchargement URL:', url);
+  return MessageMedia.fromUrl(url, { unsafeMime: true });
+}
+
 // POST /api/sendVoice  { chatId, session, file: { url } }
 app.post('/api/sendVoice', auth, async (req, res) => {
   let { chatId, session = 'default', file } = req.body;
@@ -364,7 +386,7 @@ app.post('/api/sendVoice', auth, async (req, res) => {
     const cl   = getClient(session);
     const id   = formatChatId(chatId);
     const chat = await cl.getChatById(id);
-    const media = await MessageMedia.fromUrl(file.url, { unsafeMime: true });
+    const media = await resolveMedia(file.url);
     // Forcer le rendu "note vocale" dans WhatsApp
     media.mimetype = 'audio/ogg; codecs=opus';
 
@@ -389,7 +411,7 @@ app.post('/api/sendVideo', auth, async (req, res) => {
   try {
     const cl    = getClient(session);
     const id    = formatChatId(chatId);
-    const media = await MessageMedia.fromUrl(file.url, { unsafeMime: true });
+    const media = await resolveMedia(file.url);
 
     await randomDelay(500, 1500);
     await cl.sendMessage(id, media, { caption });
