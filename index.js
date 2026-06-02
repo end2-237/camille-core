@@ -385,25 +385,24 @@ app.post('/api/sendVoice', auth, async (req, res) => {
   if (!file?.url) return res.json({ success: true, skipped: true, reason: 'Aucune URL audio configurée' });
 
   try {
-    const cl      = getClient(session);
-    const rawId   = formatChatId(chatId);
-    const mediaId = normalizeMediaId(rawId);   // @lid → @c.us pour media
-    console.log('[sendVoice] rawId:', rawId, '→ mediaId:', mediaId, 'url:', file.url);
+    const cl    = getClient(session);
+    const rawId = formatChatId(chatId);
+    console.log('[sendVoice] chatId:', rawId, 'url:', file.url);
 
-    const chat = await cl.getChatById(mediaId);
+    const chat = await cl.getChatById(rawId);
     await chat.sendStateRecording();
     await randomDelay(1500, 3000);
 
     try {
-      // Essai PTT (OGG/Opus) via @c.us
+      // Essai PTT (OGG/Opus) — même ID que sendText qui fonctionne
       const mediaPtt = await resolveMedia(file.url);
       mediaPtt.mimetype = 'audio/ogg; codecs=opus';
-      await cl.sendMessage(mediaId, mediaPtt, { sendAudioAsVoice: true });
+      await cl.sendMessage(rawId, mediaPtt, { sendAudioAsVoice: true });
       console.log('[sendVoice] PTT envoyé ✓');
     } catch (pttErr) {
       console.warn('[sendVoice] PTT échoué:', pttErr.message, '→ audio normal');
       const media = await resolveMedia(file.url);
-      await cl.sendMessage(mediaId, media);
+      await cl.sendMessage(rawId, media);
       console.log('[sendVoice] audio normal envoyé ✓');
     }
 
