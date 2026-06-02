@@ -431,7 +431,11 @@ app.post('/api/sendVoice', auth, async (req, res) => {
 
     const mediaPtt = await resolveMedia(file.url);
     mediaPtt.mimetype = 'audio/ogg; codecs=opus';
-    console.log('[sendVoice] envoi PTT vers:', sendId, 'data length:', mediaPtt.data?.length);
+    const dataLen = mediaPtt.data ? mediaPtt.data.length : 0;
+    console.log('[sendVoice] envoi PTT vers:', sendId, 'data length:', dataLen);
+    if (dataLen < 500) {
+      throw new Error(`Fichier audio invalide ou introuvable (${dataLen} bytes base64) — vérifiez que le fichier est bien uploadé`);
+    }
 
     try {
       await cl.sendMessage(sendId, mediaPtt, { sendAudioAsVoice: true });
