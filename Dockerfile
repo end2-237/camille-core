@@ -1,24 +1,14 @@
 # ── Camille Core Dockerfile ──────────────────────────────────────────────────
-# Node 18 slim + Chromium pour whatsapp-web.js (Puppeteer)
+# Utilise ghcr.io/puppeteer/puppeteer : Node 20 + Chromium pré-installé
+# Evite l'installation apt de Chromium (~2-3 min) à chaque build
 
-FROM node:18-bullseye-slim
+FROM ghcr.io/puppeteer/puppeteer:22
 
-# Chromium uniquement — ses dépendances (libogg, libnss3, etc.) sont
-# résolues automatiquement par apt. --fix-missing gère les erreurs réseau
-# transitoires pendant le build.
-RUN apt-get update && apt-get install -y --fix-missing \
-    chromium \
-    fonts-freefont-ttf \
-    ca-certificates \
-    --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
-
-# Pointer Puppeteer vers le Chromium système
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
+# npm install en premier pour profiter du layer cache Docker
 COPY package*.json ./
 RUN npm install --production
 
