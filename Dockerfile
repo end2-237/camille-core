@@ -3,10 +3,9 @@
 
 FROM ghcr.io/puppeteer/puppeteer:22
 
-# Ne pas télécharger Chromium via npm (déjà dans l'image)
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 
-# Lancer en root pour accès aux volumes montés depuis l'hôte (sessions/)
 USER root
 
 WORKDIR /app
