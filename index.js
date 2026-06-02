@@ -378,23 +378,28 @@ function normalizeMediaId(id) {
   return id.replace(/@lid$/, '@c.us');
 }
 
-// POST /api/sendVoice  { chatId, session, file: { url } }
+// POST /api/sendVoice  { chatId, session, file: { url }, phone? }
+// phone: numéro international sans + ni espaces (ex: 33612345678), prioritaire sur chatId pour @lid
 app.post('/api/sendVoice', auth, async (req, res) => {
-  let { chatId, session = 'default', file } = req.body;
+  let { chatId, session = 'default', file, phone } = req.body;
   if (!chatId) return res.status(400).json({ error: 'chatId requis' });
   if (!file?.url) return res.json({ success: true, skipped: true, reason: 'Aucune URL audio configurée' });
 
   try {
     const cl    = getClient(session);
     const rawId = formatChatId(chatId);
-    console.log('[sendVoice] chatId:', rawId, 'url:', file.url);
+    console.log('[sendVoice] chatId:', rawId, 'phone:', phone || 'non fourni', 'url:', file.url);
 
-    // Résoudre le vrai ID @c.us depuis le contact (le LID n'est pas un numéro de téléphone)
+    // Résoudre le vrai ID @c.us pour l'envoi media
     let sendId = rawId;
-    if (rawId.endsWith('@lid')) {
+    if (phone) {
+      // Priorité : numéro passé explicitement depuis n8n
+      sendId = `${String(phone).replace(/[^0-9]/g, '')}@c.us`;
+      console.log('[sendVoice] sendId depuis phone param:', sendId);
+    } else if (rawId.endsWith('@lid')) {
+      // Fallback : résolution via getContactById
       try {
         const contact = await cl.getContactById(rawId);
-        // contact.id._serialized est au format number@c.us
         const cus = contact.id._serialized;
         if (cus && cus.endsWith('@c.us')) {
           sendId = cus;
