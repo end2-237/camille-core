@@ -390,26 +390,34 @@ app.post('/api/sendVoice', auth, async (req, res) => {
     console.log('[sendVoice] chatId:', rawId, 'url:', file.url);
 
     const chat = await cl.getChatById(rawId);
+    // Pour l'envoi media, utiliser @c.us si le contact est @lid
+    const sendId = normalizeMediaId(rawId);
+    console.log('[sendVoice] sendId pour media:', sendId);
+
     await chat.sendStateRecording();
     await randomDelay(1500, 3000);
 
     try {
-      // Utiliser chat.sendMessage (contexte LID résolu) plutôt que cl.sendMessage
       const mediaPtt = await resolveMedia(file.url);
       mediaPtt.mimetype = 'audio/ogg; codecs=opus';
-      await chat.sendMessage(mediaPtt, { sendAudioAsVoice: true });
+      await cl.sendMessage(sendId, mediaPtt, { sendAudioAsVoice: true });
       console.log('[sendVoice] PTT envoyé ✓');
     } catch (pttErr) {
-      console.warn('[sendVoice] PTT échoué:', pttErr.message, '→ audio normal');
-      const media = await resolveMedia(file.url);
-      await chat.sendMessage(media);
-      console.log('[sendVoice] audio normal envoyé ✓');
+      console.warn('[sendVoice] PTT échoué:', pttErr.message, pttErr.stack?.split('\n')[1] || '', '→ audio normal');
+      try {
+        const media = await resolveMedia(file.url);
+        await cl.sendMessage(sendId, media);
+        console.log('[sendVoice] audio normal envoyé ✓');
+      } catch (audioErr) {
+        console.error('[sendVoice] audio normal échoué aussi:', audioErr.message, audioErr.stack?.split('\n')[1] || '');
+        throw audioErr;
+      }
     }
 
     await chat.clearState();
     res.json({ success: true });
   } catch (err) {
-    console.error('[sendVoice] ERREUR FINALE:', err.message);
+    console.error('[sendVoice] ERREUR FINALE:', err.message, err.stack?.split('\n').slice(0,3).join(' | '));
     res.status(500).json({ success: false, error: err.message });
   }
 });
