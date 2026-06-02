@@ -378,38 +378,50 @@ function normalizeMediaId(id) {
   return id.replace(/@lid$/, '@c.us');
 }
 
-// POST /api/sendVoice  { chatId, session, file: { url }, phone? }
-// phone: numéro international sans + ni espaces (ex: 33612345678), prioritaire sur chatId pour @lid
+// POST /api/sendVoice  { chatId, session, file: { url } }
 app.post('/api/sendVoice', auth, async (req, res) => {
-  let { chatId, session = 'default', file, phone } = req.body;
+  let { chatId, session = 'default', file } = req.body;
   if (!chatId) return res.status(400).json({ error: 'chatId requis' });
   if (!file?.url) return res.json({ success: true, skipped: true, reason: 'Aucune URL audio configurée' });
 
   try {
     const cl    = getClient(session);
     const rawId = formatChatId(chatId);
-    console.log('[sendVoice] chatId:', rawId, 'phone:', phone || 'non fourni', 'url:', file.url);
+    console.log('[sendVoice] chatId:', rawId, 'url:', file.url);
 
-    // Résoudre le vrai ID @c.us pour l'envoi media
+    // Pour @lid : récupérer le vrai numéro de téléphone via le contact
     let sendId = rawId;
-    if (phone) {
-      // Priorité : numéro passé explicitement depuis n8n
-      sendId = `${String(phone).replace(/[^0-9]/g, '')}@c.us`;
-      console.log('[sendVoice] sendId depuis phone param:', sendId);
-    } else if (rawId.endsWith('@lid')) {
-      // Fallback : résolution via getContactById
+    if (rawId.endsWith('@lid')) {
       try {
         const contact = await cl.getContactById(rawId);
-        const cus = contact.id._serialized;
+        // Log complet pour diagnostic
+        console.log('[sendVoice] contact keys:', Object.keys(contact));
+        console.log('[sendVoice] contact.id:', JSON.stringify(contact.id));
+        console.log('[sendVoice] contact.number:', contact.number);
+        console.log('[sendVoice] contact.pushname:', contact.pushname);
+
+        // Essayer toutes les sources possibles du vrai numéro
+        const cus = contact.id && contact.id._serialized;
         if (cus && cus.endsWith('@c.us')) {
           sendId = cus;
-          console.log('[sendVoice] LID résolu → @c.us:', sendId);
-        } else if (contact.number) {
+          console.log('[sendVoice] sendId via contact.id._serialized:', sendId);
+        } else if (contact.number && contact.number.length > 5) {
           sendId = `${contact.number}@c.us`;
-          console.log('[sendVoice] LID résolu via number:', sendId);
+          console.log('[sendVoice] sendId via contact.number:', sendId);
+        } else {
+          // Dernière tentative : récupérer depuis le chat
+          const chat = await cl.getChatById(rawId);
+          const chatContact = await chat.getContact();
+          console.log('[sendVoice] chatContact.id:', JSON.stringify(chatContact.id));
+          console.log('[sendVoice] chatContact.number:', chatContact.number);
+          if (chatContact.number && chatContact.number.length > 5) {
+            sendId = `${chatContact.number}@c.us`;
+            console.log('[sendVoice] sendId via chatContact.number:', sendId);
+          }
         }
       } catch (lidErr) {
-        console.warn('[sendVoice] Résolution LID échouée, tentative directe:', lidErr.message || lidErr);
+        const lidMsg = (lidErr && typeof lidErr === 'object') ? lidErr.message : String(lidErr);
+        console.warn('[sendVoice] Résolution LID échouée:', lidMsg);
       }
     }
 
@@ -419,7 +431,7 @@ app.post('/api/sendVoice', auth, async (req, res) => {
 
     const mediaPtt = await resolveMedia(file.url);
     mediaPtt.mimetype = 'audio/ogg; codecs=opus';
-    console.log('[sendVoice] envoi PTT vers:', sendId, 'mimetype:', mediaPtt.mimetype, 'data length:', mediaPtt.data?.length);
+    console.log('[sendVoice] envoi PTT vers:', sendId, 'data length:', mediaPtt.data?.length);
 
     try {
       await cl.sendMessage(sendId, mediaPtt, { sendAudioAsVoice: true });
