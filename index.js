@@ -390,8 +390,7 @@ app.post('/api/sendVoice', auth, async (req, res) => {
     const mediaId = normalizeMediaId(rawId);   // @lid → @c.us pour media
     console.log('[sendVoice] rawId:', rawId, '→ mediaId:', mediaId, 'url:', file.url);
 
-    // sendStateRecording via @lid (fonctionne)
-    const chat = await cl.getChatById(rawId);
+    const chat = await cl.getChatById(mediaId);
     await chat.sendStateRecording();
     await randomDelay(1500, 3000);
 
