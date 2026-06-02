@@ -394,15 +394,15 @@ app.post('/api/sendVoice', auth, async (req, res) => {
     await randomDelay(1500, 3000);
 
     try {
-      // Essai PTT (OGG/Opus) — même ID que sendText qui fonctionne
+      // Utiliser chat.sendMessage (contexte LID résolu) plutôt que cl.sendMessage
       const mediaPtt = await resolveMedia(file.url);
       mediaPtt.mimetype = 'audio/ogg; codecs=opus';
-      await cl.sendMessage(rawId, mediaPtt, { sendAudioAsVoice: true });
+      await chat.sendMessage(mediaPtt, { sendAudioAsVoice: true });
       console.log('[sendVoice] PTT envoyé ✓');
     } catch (pttErr) {
       console.warn('[sendVoice] PTT échoué:', pttErr.message, '→ audio normal');
       const media = await resolveMedia(file.url);
-      await cl.sendMessage(rawId, media);
+      await chat.sendMessage(media);
       console.log('[sendVoice] audio normal envoyé ✓');
     }
 
