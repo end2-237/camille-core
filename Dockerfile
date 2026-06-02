@@ -3,9 +3,10 @@
 
 FROM ghcr.io/puppeteer/puppeteer:22
 
+# Ne pas télécharger Chromium via npm (déjà dans l'image)
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
-# Repasser root pour créer les dossiers et installer les dépendances
+# Lancer en root pour accès aux volumes montés depuis l'hôte (sessions/)
 USER root
 
 WORKDIR /app
@@ -14,11 +15,7 @@ COPY package*.json ./
 RUN npm install --production
 
 COPY . .
-
-# Créer les dossiers et donner les droits à pptruser
-RUN mkdir -p sessions public/media && chown -R pptruser:pptruser /app
-
-USER pptruser
+RUN mkdir -p sessions public/media
 
 EXPOSE 3000
 CMD ["node", "index.js"]
