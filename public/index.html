@@ -553,6 +553,35 @@
     #view-config { display: none; }
     #view-config.active { display: block; }
 
+    #view-monitoring { display: none; }
+    #view-monitoring.active { display: block; }
+
+    /* ── Monitoring ── */
+    .mon-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .mon-kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+    .mon-kpi-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+    .mon-kpi-value { font-size: 26px; font-family: var(--mono); margin-top: 6px; }
+    .mon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 16px; }
+    .mon-card { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--muted2); border-radius: var(--radius); padding: 18px; }
+    .mon-card.health-ok       { border-left-color: var(--accent); }
+    .mon-card.health-warn     { border-left-color: var(--yellow); }
+    .mon-card.health-critical { border-left-color: var(--red); }
+    .mon-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .mon-card-name { font-weight: 600; font-family: var(--mono); }
+    .mon-pill { font-size: 11px; padding: 3px 9px; border-radius: 99px; font-weight: 600; }
+    .mon-pill.ok       { background: var(--accent-bg); color: var(--accent); }
+    .mon-pill.warn     { background: var(--yellow-bg); color: var(--yellow); }
+    .mon-pill.critical { background: var(--red-bg); color: var(--red); }
+    .mon-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin: 12px 0; }
+    .mon-stat-label { font-size: 11px; color: var(--muted); }
+    .mon-stat-val { font-family: var(--mono); font-size: 14px; }
+    .mon-stat-val.bad { color: var(--red); }
+    .mon-stat-val.warnv { color: var(--yellow); }
+    .mon-issues { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+    .mon-issue { font-size: 12px; color: var(--yellow); display: flex; gap: 6px; margin: 4px 0; }
+    .mon-issue.crit { color: var(--red); }
+    .mon-err { font-size: 11px; color: var(--muted); font-family: var(--mono); margin-top: 8px; word-break: break-all; }
+
     .config-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -877,6 +906,14 @@
       <div class="divider" style="margin: 8px 0;"></div>
       <div class="nav-label">Système</div>
 
+      <div class="nav-item" id="nav-monitoring" onclick="switchView('monitoring')">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M1 8h3l2-5 4 10 2-5h3"/>
+        </svg>
+        Monitoring
+        <span class="nav-badge" id="monitoring-alert-badge" style="display:none;background:var(--red-bg);color:var(--red);">0</span>
+      </div>
+
       <div class="nav-item" id="nav-config" onclick="switchView('config')">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="8" cy="8" r="2.5"/>
@@ -919,6 +956,31 @@
           <p>Créez une première session pour commencer à connecter un numéro WhatsApp.</p>
         </div>
         <div id="sessions-grid"></div>
+      </div>
+    </div>
+
+    <!-- ── Monitoring view ── -->
+    <div id="view-monitoring">
+      <div class="content-header">
+        <div>
+          <div class="content-title">Monitoring</div>
+          <div class="content-subtitle" id="monitoring-subtitle">Santé des sessions & ressources serveur</div>
+        </div>
+        <button class="btn btn-ghost" onclick="refreshMonitoring()">
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12.5 7a5.5 5.5 0 1 1-1.6-3.9M12.5 1v3h-3"/>
+          </svg>
+          Rafraîchir
+        </button>
+      </div>
+      <div class="content-body">
+        <!-- KPIs serveur -->
+        <div id="mon-kpis" class="mon-kpis"></div>
+        <!-- Cartes par session -->
+        <div id="mon-grid" class="mon-grid"></div>
+        <div id="mon-empty" style="display:none;color:var(--muted);text-align:center;padding:40px;">
+          Aucune session à surveiller.
+        </div>
       </div>
     </div>
 
@@ -1229,6 +1291,9 @@
     refreshServerInfo();
     loadWebhookConfig();
     serverInfoInterval = setInterval(refreshServerInfo, 30000);
+    // Monitoring : refresh régulier pour garder le badge d'alerte à jour
+    refreshMonitoring();
+    monitoringInterval = setInterval(refreshMonitoring, 15000);
   }
 
   // ── Socket.io ──────────────────────────────────────────────────────────────
@@ -1262,10 +1327,10 @@
 
   // ── Views ──────────────────────────────────────────────────────────────────
   function switchView(view) {
-    document.getElementById('view-sessions').classList.remove('active');
-    document.getElementById('view-config').classList.remove('active');
-    document.getElementById('nav-sessions').classList.remove('active');
-    document.getElementById('nav-config').classList.remove('active');
+    ['sessions', 'monitoring', 'config'].forEach(v => {
+      document.getElementById(`view-${v}`).classList.remove('active');
+      document.getElementById(`nav-${v}`).classList.remove('active');
+    });
 
     document.getElementById(`view-${view}`).classList.add('active');
     document.getElementById(`nav-${view}`).classList.add('active');
@@ -1274,6 +1339,90 @@
       refreshServerInfo();
       loadWebhookConfig();
     }
+    if (view === 'monitoring') {
+      refreshMonitoring();
+    }
+  }
+
+  // ── Monitoring ───────────────────────────────────────────────────────────────
+  let monitoringInterval = null;
+
+  function fmtAgo(ts) {
+    if (!ts) return '—';
+    const s = Math.round((Date.now() - ts) / 1000);
+    if (s < 60) return `il y a ${s}s`;
+    if (s < 3600) return `il y a ${Math.round(s / 60)}min`;
+    if (s < 86400) return `il y a ${Math.round(s / 3600)}h`;
+    return `il y a ${Math.round(s / 86400)}j`;
+  }
+
+  async function refreshMonitoring() {
+    try {
+      const d = await apiFetch('/api/health/detailed');
+      renderMonitoring(d);
+    } catch (e) {
+      document.getElementById('monitoring-subtitle').textContent = 'Erreur: ' + e.message;
+    }
+  }
+
+  function renderMonitoring(d) {
+    const sub = document.getElementById('monitoring-subtitle');
+    sub.textContent = `${d.summary.connected}/${d.summary.total} connectées · ${d.summary.critical} critique(s) · ${d.summary.warn} alerte(s)`;
+
+    // Badge sidebar
+    const alerts = d.summary.critical + d.summary.warn;
+    const badge = document.getElementById('monitoring-alert-badge');
+    if (alerts > 0) { badge.style.display = ''; badge.textContent = alerts; }
+    else badge.style.display = 'none';
+
+    // KPIs serveur
+    const up = d.uptime;
+    const upStr = up < 3600 ? `${Math.round(up/60)}min` : up < 86400 ? `${(up/3600).toFixed(1)}h` : `${(up/86400).toFixed(1)}j`;
+    const memClass = d.process.rssMB > 1500 ? 'bad' : d.process.rssMB > 900 ? 'warnv' : '';
+    document.getElementById('mon-kpis').innerHTML = `
+      <div class="mon-kpi"><div class="mon-kpi-label">Mémoire (RSS)</div><div class="mon-kpi-value ${memClass}">${d.process.rssMB}<span style="font-size:13px;color:var(--muted)"> Mo</span></div></div>
+      <div class="mon-kpi"><div class="mon-kpi-label">Heap utilisé</div><div class="mon-kpi-value">${d.process.heapUsedMB}<span style="font-size:13px;color:var(--muted)"> Mo</span></div></div>
+      <div class="mon-kpi"><div class="mon-kpi-label">Uptime</div><div class="mon-kpi-value">${upStr}</div></div>
+      <div class="mon-kpi"><div class="mon-kpi-label">Sessions connectées</div><div class="mon-kpi-value">${d.summary.connected}<span style="font-size:13px;color:var(--muted)">/${d.summary.total}</span></div></div>
+    `;
+
+    const grid = document.getElementById('mon-grid');
+    const empty = document.getElementById('mon-empty');
+    if (!d.sessions.length) { grid.innerHTML = ''; empty.style.display = 'block'; return; }
+    empty.style.display = 'none';
+
+    grid.innerHTML = d.sessions.map(s => {
+      const emptyCls = s.emptyBodyCount > 0 ? 'bad' : '';
+      const recCls   = s.reconnectCount >= 3 ? 'bad' : s.reconnectCount > 0 ? 'warnv' : '';
+      const whCls    = s.webhookErrors > 0 ? 'bad' : '';
+      const mediaCls = s.mediaErrors > 0 ? 'warnv' : '';
+      const issues = s.issues.map(i =>
+        `<div class="mon-issue ${s.health === 'critical' ? 'crit' : ''}">⚠ ${escapeHtml(i)}</div>`
+      ).join('');
+      const lastErr = s.lastError
+        ? `<div class="mon-err">Dernière erreur (${fmtAgo(s.lastError.at)}): ${escapeHtml(s.lastError.msg)}</div>` : '';
+      return `
+        <div class="mon-card health-${s.health}">
+          <div class="mon-card-head">
+            <div class="mon-card-name">${escapeHtml(s.name)}${s.phone ? ` · ${escapeHtml(s.phone)}` : ''}</div>
+            <div class="mon-pill ${s.health}">${s.health === 'ok' ? 'Sain' : s.health === 'warn' ? 'Alerte' : 'Critique'}</div>
+          </div>
+          <div style="font-size:12px;color:var(--muted)">Statut: <b style="color:var(--text)">${s.status}</b> · ${fmtAgo(s.statusChangedAt)}</div>
+          <div class="mon-stats">
+            <div><div class="mon-stat-label">Messages reçus</div><div class="mon-stat-val">${s.messageCount}</div></div>
+            <div><div class="mon-stat-label">Dernier message</div><div class="mon-stat-val">${fmtAgo(s.lastMessageAt)}</div></div>
+            <div><div class="mon-stat-label">Bodies vides (zombie)</div><div class="mon-stat-val ${emptyCls}">${s.emptyBodyCount}</div></div>
+            <div><div class="mon-stat-label">Reconnexions</div><div class="mon-stat-val ${recCls}">${s.reconnectCount}</div></div>
+            <div><div class="mon-stat-label">Erreurs webhook</div><div class="mon-stat-val ${whCls}">${s.webhookErrors}</div></div>
+            <div><div class="mon-stat-label">Erreurs média</div><div class="mon-stat-val ${mediaCls}">${s.mediaErrors}</div></div>
+          </div>
+          ${issues || lastErr ? `<div class="mon-issues">${issues}${lastErr}</div>` : ''}
+        </div>`;
+    }).join('');
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
   // ── Session count badge ────────────────────────────────────────────────────
