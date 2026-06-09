@@ -1396,6 +1396,7 @@
       const recCls   = s.reconnectCount >= 3 ? 'bad' : s.reconnectCount > 0 ? 'warnv' : '';
       const whCls    = s.webhookErrors > 0 ? 'bad' : '';
       const mediaCls = s.mediaErrors > 0 ? 'warnv' : '';
+      const zombCls  = s.zombieKills > 0 ? 'warnv' : '';
       const issues = s.issues.map(i =>
         `<div class="mon-issue ${s.health === 'critical' ? 'crit' : ''}">⚠ ${escapeHtml(i)}</div>`
       ).join('');
@@ -1415,6 +1416,8 @@
             <div><div class="mon-stat-label">Reconnexions</div><div class="mon-stat-val ${recCls}">${s.reconnectCount}</div></div>
             <div><div class="mon-stat-label">Erreurs webhook</div><div class="mon-stat-val ${whCls}">${s.webhookErrors}</div></div>
             <div><div class="mon-stat-label">Erreurs média</div><div class="mon-stat-val ${mediaCls}">${s.mediaErrors}</div></div>
+            <div><div class="mon-stat-label">Zombies récupérés</div><div class="mon-stat-val ${zombCls}">${s.zombieKills ?? 0}</div></div>
+            <div><div class="mon-stat-label">Watchdog</div><div class="mon-stat-val">${fmtAgo(s.lastWatchdogAt)}</div></div>
           </div>
           ${issues || lastErr ? `<div class="mon-issues">${issues}${lastErr}</div>` : ''}
         </div>`;

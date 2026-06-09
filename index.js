@@ -22,8 +22,18 @@ const API_KEY       = process.env.API_KEY       || 'camille-core-secret';
 const N8N_WEBHOOK   = process.env.N8N_WEBHOOK_URL || '';
 const SESSIONS_DIR  = process.env.SESSIONS_DIR  || './sessions';
 const MEDIA_DIR     = path.join(__dirname, 'public', 'media');
-const VERSION       = '1.0.0';
+const VERSION       = '1.1.0';
 const START_TIME    = Date.now();
+
+// ── Stabilité : watchdog & reconnexion ────────────────────────────────────────
+const WATCHDOG_INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS) || 60_000;  // sonde getState() toutes les 60s
+const RECONNECT_BASE_MS    = Number(process.env.RECONNECT_BASE_MS)    || 5_000;   // backoff initial
+const RECONNECT_MAX_MS     = 5 * 60_000;                                          // backoff plafonné à 5 min
+const MAX_RECONNECT_TRIES  = Number(process.env.MAX_RECONNECT_TRIES)  || 10;      // au-delà → garde le QR/erreur, stoppe la boucle
+// Version WhatsApp Web épinglée : évite que le store casse lors d'une MAJ WA côté serveur.
+// OPT-IN : actif seulement si WWEB_VERSION est défini (sinon comportement natif de la lib).
+// Pinner une version inexistante casserait la connexion → on ne force RIEN par défaut.
+const WWEB_VERSION = process.env.WWEB_VERSION || '';
 
 // Créer le dossier media au démarrage
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
@@ -100,10 +110,14 @@ function cleanLockFiles(name) {
 
 function createSession(name) {
   if (sessions.has(name)) return sessions.get(name);
-  cleanLockFiles(name);
 
   const data = {
     name, status: 'INITIALIZING', qrBase64: null, client: null, phone: null,
+    // ── État interne de stabilité ──
+    reconnecting:    false,  // garde anti-concurrence pour la reconnexion/recréation
+    stopped:         false,  // session arrêtée volontairement → ne pas reconnecter
+    watchdogTimer:   null,   // setInterval du watchdog
+    reconnectTimer:  null,   // setTimeout de la reconnexion programmée
     // ── Métriques de monitoring ──
     metrics: {
       createdAt:        Date.now(),
@@ -117,18 +131,42 @@ function createSession(name) {
       mediaErrors:      0,
       lastError:        null,   // { msg, at }
       emptyBodyCount:   0,      // messages reçus avec body vide (symptôme zombie)
+      zombieKills:      0,      // nombre de fois où le watchdog a recréé un client zombie
+      lastWatchdogAt:   null,   // dernière sonde getState() réussie
     },
   };
   sessions.set(name, data);
 
+  spawnClient(data);
+  startWatchdog(data);
+  return data;
+}
+
+// ── spawnClient : construit un client NEUF et l'attache à `data` ──────────────
+// Utilisé au démarrage ET à chaque reconnexion/recréation. Ne touche jamais aux
+// métriques cumulées (elles vivent dans data.metrics), seulement à data.client.
+function spawnClient(data) {
+  const name = data.name;
+  cleanLockFiles(name);   // purge les SingletonLock laissés par un Chromium mort
+
+  // Épinglage de version OPT-IN : seulement si WWEB_VERSION est défini.
+  const versionOpts = WWEB_VERSION ? {
+    webVersion: WWEB_VERSION,
+    webVersionCache: {
+      type: 'remote',
+      remotePath: `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${WWEB_VERSION}.html`,
+    },
+  } : {};
+
   const client = new Client({
-    authStrategy: new LocalAuth({
-      clientId:  name,
-      dataPath:  SESSIONS_DIR,
-    }),
+    authStrategy: new LocalAuth({ clientId: name, dataPath: SESSIONS_DIR }),
+    ...versionOpts,
+    restartOnAuthFail: true,   // relance proprement plutôt que de rester bloqué sur auth_failure
     puppeteer: {
       headless: true,
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      // NB : --single-process RETIRÉ — c'était la cause n°1 des crashs renderer silencieux.
+      // --no-zygote retiré aussi (n'a de sens qu'avec --single-process).
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -136,23 +174,16 @@ function createSession(name) {
         '--disable-dev-shm-usage',
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-profile-directory-locking',
       ],
     },
   });
 
   data.client = client;
 
-  // ── Événements WhatsApp ───────────────────────────────────────────────────
-
-  // Helper : marque un changement de statut (pour le monitoring)
   const setStatus = (s) => { data.status = s; data.metrics.statusChangedAt = Date.now(); };
 
   client.on('qr', async (qr) => {
-    data.status   = 'QR_READY';
-    data.metrics.statusChangedAt = Date.now();
+    setStatus('QR_READY');
     data.qrBase64 = await QRCode.toDataURL(qr);
     io.emit('session:update', { name, status: data.status, qr: data.qrBase64 });
     console.log(`[${name}] 📱 QR Code prêt — scannez depuis le dashboard`);
@@ -167,6 +198,8 @@ function createSession(name) {
   client.on('ready', async () => {
     setStatus('CONNECTED');
     data.qrBase64 = null;
+    data.reconnecting = false;        // succès → libère la garde
+    data.metrics.reconnectCount = 0;  // remet le backoff à zéro
     try {
       const info = await client.getInfo();
       data.phone = info?.wid?.user || null;
@@ -187,23 +220,14 @@ function createSession(name) {
     data.metrics.lastDisconnect = { reason: String(reason), at: Date.now() };
     io.emit('session:update', { name, status: data.status });
     console.log(`[${name}] 🔌 Déconnecté: ${reason}`);
-    // Tenter reconnexion après 10 s
-    setTimeout(() => {
-      data.metrics.reconnectCount += 1;
-      console.log(`[${name}] 🔄 Tentative reconnexion (#${data.metrics.reconnectCount})...`);
-      client.initialize().catch(e => {
-        data.metrics.lastError = { msg: `reconnect: ${e.message}`, at: Date.now() };
-        console.error(`[${name}] Reconnexion failed:`, e.message);
-      });
-    }, 10_000);
+    // Reconnexion correcte : destroy() du client mort PUIS client neuf (jamais re-init du zombie)
+    scheduleReconnect(name, `disconnected: ${reason}`);
   });
 
   // ── Réception messages → forward n8n ─────────────────────────────────────
-
   client.on('message', async (msg) => {
     if (msg.fromMe) return;
 
-    // ── Monitoring : compteur + détection de zombie (body vide) ──
     data.metrics.lastMessageAt = Date.now();
     data.metrics.messageCount += 1;
     if ((!msg.body || msg.body.trim() === '') && msg.type === 'chat') {
@@ -211,7 +235,6 @@ function createSession(name) {
       console.warn(`[${name}] ⚠️  Message body vide (type=chat) — symptôme zombie possible (#${data.metrics.emptyBodyCount})`);
     }
 
-    // Support webhook par session : N8N_WEBHOOK_MONSESSION ou N8N_WEBHOOK_URL global
     const webhookUrl = webhookConfig.sessions[name]
       || process.env[`N8N_WEBHOOK_${name.toUpperCase()}`]
       || webhookConfig.global
@@ -240,20 +263,97 @@ function createSession(name) {
     }
   });
 
-  // ── Init ──────────────────────────────────────────────────────────────────
-
   client.initialize().catch(err => {
     data.status = 'ERROR';
+    data.metrics.lastError = { msg: `init: ${err.message}`, at: Date.now() };
     console.error(`[${name}] Init error:`, err.message);
+    // Plan B : si l'init échoue (souvent fetch version distante KO), on reprogramme une reconnexion
+    scheduleReconnect(name, `init error: ${err.message}`);
   });
 
-  return data;
+  return client;
+}
+
+// ── scheduleReconnect : détruit proprement le client mort puis en recrée un ───
+// Garde anti-concurrence (data.reconnecting) + backoff exponentiel plafonné.
+function scheduleReconnect(name, reason) {
+  const data = sessions.get(name);
+  if (!data || data.stopped) return;          // session supprimée/arrêtée → on n'insiste pas
+  if (data.reconnecting) return;              // déjà une reconnexion en cours
+  data.reconnecting = true;
+
+  if (data.metrics.reconnectCount >= MAX_RECONNECT_TRIES) {
+    data.metrics.lastError = { msg: `abandon reconnexion après ${MAX_RECONNECT_TRIES} essais (${reason})`, at: Date.now() };
+    console.error(`[${name}] 🛑 Reconnexion abandonnée après ${MAX_RECONNECT_TRIES} essais. Reset manuel requis.`);
+    data.reconnecting = false;
+    return;
+  }
+
+  const tries = data.metrics.reconnectCount;
+  const delay = Math.min(RECONNECT_BASE_MS * Math.pow(2, tries), RECONNECT_MAX_MS);
+  console.log(`[${name}] 🔄 Reconnexion programmée dans ${Math.round(delay/1000)}s (essai #${tries + 1}) — ${reason}`);
+
+  clearTimeout(data.reconnectTimer);
+  data.reconnectTimer = setTimeout(async () => {
+    data.metrics.reconnectCount += 1;
+    // 1) Détruire proprement l'ancien client zombie (best-effort, jamais bloquant)
+    try {
+      if (data.client) await data.client.destroy();
+    } catch (e) {
+      console.warn(`[${name}] destroy() pendant reconnexion: ${e.message}`);
+    }
+    // 2) Recréer un client NEUF
+    try {
+      console.log(`[${name}] 🔁 Recréation d'un client neuf...`);
+      spawnClient(data);
+      data.reconnecting = false;  // sera reconfirmé sur 'ready'
+    } catch (e) {
+      data.reconnecting = false;
+      data.metrics.lastError = { msg: `recréation: ${e.message}`, at: Date.now() };
+      console.error(`[${name}] Recréation échouée:`, e.message);
+      scheduleReconnect(name, `retry après échec recréation`);
+    }
+  }, delay);
+}
+
+// ── Watchdog : sonde getState() régulièrement pour détecter les zombies ───────
+// Le cas vicieux : le renderer Chromium meurt SANS émettre 'disconnected'.
+// getState() lève alors une exception ou renvoie ≠ CONNECTED → on force la recréation.
+function startWatchdog(data) {
+  const name = data.name;
+  clearInterval(data.watchdogTimer);
+  data.watchdogTimer = setInterval(async () => {
+    if (data.stopped || data.reconnecting) return;
+    // On ne sonde que les sessions censées être connectées
+    if (data.status !== 'CONNECTED') return;
+    try {
+      const state = await Promise.race([
+        data.client.getState(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('getState timeout')), 15_000)),
+      ]);
+      data.metrics.lastWatchdogAt = Date.now();
+      if (state !== 'CONNECTED') {
+        data.metrics.zombieKills += 1;
+        console.warn(`[${name}] 🧟 Watchdog : état=${state} ≠ CONNECTED → recréation`);
+        scheduleReconnect(name, `watchdog state=${state}`);
+      }
+    } catch (e) {
+      // getState() qui throw = renderer mort = zombie silencieux : le cas qu'on cible
+      data.metrics.zombieKills += 1;
+      data.metrics.lastError = { msg: `watchdog: ${e.message}`, at: Date.now() };
+      console.warn(`[${name}] 🧟 Watchdog : getState() a échoué (${e.message}) → zombie présumé, recréation`);
+      scheduleReconnect(name, `watchdog exception: ${e.message}`);
+    }
+  }, WATCHDOG_INTERVAL_MS);
 }
 
 async function stopSession(name) {
   const s = sessions.get(name);
   if (!s) return false;
-  try { await s.client.destroy(); } catch {}
+  s.stopped = true;                       // bloque toute reconnexion en vol
+  clearInterval(s.watchdogTimer);
+  clearTimeout(s.reconnectTimer);
+  try { if (s.client) await s.client.destroy(); } catch {}
   sessions.delete(name);
   io.emit('session:removed', { name });
   return true;
@@ -622,6 +722,12 @@ function sessionHealth(s) {
     issues.push(`${m.webhookErrors} erreur(s) webhook n8n`);
   }
 
+  // Zombies récupérés par le watchdog
+  if (m.zombieKills > 0) {
+    if (health === 'ok') health = 'warn';
+    issues.push(`${m.zombieKills} zombie(s) récupéré(s) par le watchdog`);
+  }
+
   // Silence prolongé (info seulement)
   const silenceMs = m.lastMessageAt ? now - m.lastMessageAt : null;
   if (s.status === 'CONNECTED' && silenceMs !== null && silenceMs > ZOMBIE_SILENCE_MS && m.messageCount > 0) {
@@ -640,6 +746,8 @@ function sessionHealth(s) {
     reconnectCount:   m.reconnectCount || 0,
     webhookErrors:    m.webhookErrors || 0,
     mediaErrors:      m.mediaErrors || 0,
+    zombieKills:      m.zombieKills || 0,
+    lastWatchdogAt:   m.lastWatchdogAt || null,
     lastMessageAt:    m.lastMessageAt || null,
     lastWebhookOkAt:  m.lastWebhookOkAt || null,
     statusChangedAt:  m.statusChangedAt || null,
