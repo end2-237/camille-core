@@ -22,7 +22,7 @@ const API_KEY       = process.env.API_KEY       || 'camille-core-secret';
 const N8N_WEBHOOK   = process.env.N8N_WEBHOOK_URL || '';
 const SESSIONS_DIR  = process.env.SESSIONS_DIR  || './sessions';
 const MEDIA_DIR     = path.join(__dirname, 'public', 'media');
-const VERSION       = '1.1.0';
+const VERSION       = '1.2.0';
 const START_TIME    = Date.now();
 
 // ── Stabilité : watchdog & reconnexion ────────────────────────────────────────
@@ -37,6 +37,50 @@ const WWEB_VERSION = process.env.WWEB_VERSION || '';
 
 // Créer le dossier media au démarrage
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
+
+// ── Analytics : journal des messages entrants (persistant) ────────────────────
+// Stocke un événement léger par message reçu pour produire des statistiques :
+// nombre de conversations (contacts uniques), messages, affluence par heure/jour…
+// Persisté en JSONL dans le volume `sessions` (survit aux redéploiements).
+const ANALYTICS_FILE       = path.join(SESSIONS_DIR, 'analytics.jsonl');
+const ANALYTICS_RETENTION_DAYS = Number(process.env.ANALYTICS_RETENTION_DAYS) || 90;
+let analyticsEvents = [];   // [{ t: ms, s: session, f: from }]
+
+function loadAnalytics() {
+  try {
+    if (!fs.existsSync(ANALYTICS_FILE)) return;
+    const cutoff = Date.now() - ANALYTICS_RETENTION_DAYS * 86400000;
+    const lines = fs.readFileSync(ANALYTICS_FILE, 'utf8').split('\n');
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try { const e = JSON.parse(line); if (e.t >= cutoff) analyticsEvents.push(e); } catch {}
+    }
+    console.log(`[analytics] ${analyticsEvents.length} événements chargés (rétention ${ANALYTICS_RETENTION_DAYS}j)`);
+  } catch (e) { console.warn('[analytics] load error:', e.message); }
+}
+
+function recordAnalytics(session, from) {
+  const e = { t: Date.now(), s: session, f: from };
+  analyticsEvents.push(e);
+  fs.appendFile(ANALYTICS_FILE, JSON.stringify(e) + '\n', err => {
+    if (err) console.warn('[analytics] append error:', err.message);
+  });
+}
+
+// Compaction quotidienne : réécrit le fichier en ne gardant que la rétention
+function compactAnalytics() {
+  try {
+    const cutoff = Date.now() - ANALYTICS_RETENTION_DAYS * 86400000;
+    analyticsEvents = analyticsEvents.filter(e => e.t >= cutoff);
+    const tmp = ANALYTICS_FILE + '.tmp';
+    fs.writeFileSync(tmp, analyticsEvents.map(e => JSON.stringify(e)).join('\n') + (analyticsEvents.length ? '\n' : ''));
+    fs.renameSync(tmp, ANALYTICS_FILE);
+    console.log(`[analytics] compacté → ${analyticsEvents.length} événements`);
+  } catch (e) { console.warn('[analytics] compact error:', e.message); }
+}
+
+loadAnalytics();
+setInterval(compactAnalytics, 24 * 3600 * 1000);
 
 // ── Webhook config (persisted in webhooks.json) ───────────────────────────────
 const WEBHOOKS_FILE = path.join(__dirname, 'webhooks.json');
@@ -236,6 +280,7 @@ function spawnClient(data) {
 
     data.metrics.lastMessageAt = Date.now();
     data.metrics.messageCount += 1;
+    recordAnalytics(name, msg.from);   // journal pour les statistiques (conversations, affluence)
     if ((!msg.body || msg.body.trim() === '') && msg.type === 'chat') {
       data.metrics.emptyBodyCount += 1;
       console.warn(`[${name}] ⚠️  Message body vide (type=chat) — symptôme zombie possible (#${data.metrics.emptyBodyCount})`);
@@ -806,6 +851,80 @@ app.get('/api/health/detailed', auth, (_req, res) => {
       warn:      list.filter(s => s.health === 'warn').length,
     },
     sessions: list,
+  });
+});
+
+// ── Analytics : statistiques de conversations & affluence ─────────────────────
+// GET /api/analytics?from=ms&to=ms&session=xxx&granularity=minute|hour|day|weekday
+//   - conversations = contacts uniques (numéros distincts) sur la période
+//   - messages      = nombre total de messages reçus
+//   - series        = répartition temporelle selon la granularité
+//   - byHour        = affluence par heure du jour (0-23)
+//   - byWeekday     = affluence par jour de semaine (0=Dim … 6=Sam)
+//   - sessionsList  = liste des sessions présentes (pour le filtre)
+
+function bucketKey(ts, granularity) {
+  const d = new Date(ts);
+  const p = (n) => String(n).padStart(2, '0');
+  switch (granularity) {
+    case 'minute': return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    case 'hour':   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:00`;
+    case 'day':
+    default:       return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+  }
+}
+
+app.get('/api/analytics', auth, (req, res) => {
+  const now = Date.now();
+  const to   = req.query.to   ? Number(req.query.to)   : now;
+  const from = req.query.from ? Number(req.query.from) : now - 7 * 86400000;  // 7j par défaut
+  const session = req.query.session && req.query.session !== 'all' ? req.query.session : null;
+  const granularity = ['minute', 'hour', 'day'].includes(req.query.granularity) ? req.query.granularity : 'day';
+
+  const filtered = analyticsEvents.filter(e =>
+    e.t >= from && e.t <= to && (!session || e.s === session)
+  );
+
+  // Répartition temporelle : messages + conversations (contacts uniques par bucket)
+  const buckets = new Map();   // key → { messages, contacts:Set }
+  const byHour    = Array(24).fill(0);
+  const byWeekday = Array(7).fill(0);
+  const uniqueContacts = new Set();
+
+  for (const e of filtered) {
+    const k = bucketKey(e.t, granularity);
+    if (!buckets.has(k)) buckets.set(k, { messages: 0, contacts: new Set() });
+    const b = buckets.get(k);
+    b.messages += 1;
+    b.contacts.add(e.f);
+    const d = new Date(e.t);
+    byHour[d.getHours()] += 1;
+    byWeekday[d.getDay()] += 1;
+    uniqueContacts.add(e.f);
+  }
+
+  const series = [...buckets.entries()]
+    .sort((a, b) => a[0] < b[0] ? -1 : 1)
+    .map(([bucket, v]) => ({ bucket, messages: v.messages, conversations: v.contacts.size }));
+
+  // Heure / jour de pointe
+  const peakHour = byHour.indexOf(Math.max(...byHour));
+  const WD = ['Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'];
+  const peakWeekday = byWeekday.indexOf(Math.max(...byWeekday));
+
+  res.json({
+    range: { from, to, granularity, session: session || 'all' },
+    totals: {
+      messages:      filtered.length,
+      conversations: uniqueContacts.size,
+      avgPerConv:    uniqueContacts.size ? +(filtered.length / uniqueContacts.size).toFixed(1) : 0,
+      peakHour:      filtered.length ? peakHour : null,
+      peakWeekday:   filtered.length ? WD[peakWeekday] : null,
+    },
+    series,
+    byHour,
+    byWeekday,
+    sessionsList: [...new Set(analyticsEvents.map(e => e.s))],
   });
 });
 

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Camille Core</title>
   <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -556,6 +557,24 @@
     #view-monitoring { display: none; }
     #view-monitoring.active { display: block; }
 
+    #view-analytics { display: none; }
+    #view-analytics.active { display: block; }
+
+    /* ── Analytics ── */
+    .ana-filters { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+    .ana-filter { display: flex; flex-direction: column; gap: 5px; }
+    .ana-filter label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+    .ana-filter select, .ana-filter input {
+      background: var(--surface2); border: 1px solid var(--border2); border-radius: var(--radius-sm);
+      color: var(--text); font-family: var(--font); font-size: 13px; padding: 8px 10px; min-width: 150px;
+    }
+    .ana-filter select:focus, .ana-filter input:focus { border-color: var(--accent); outline: none; }
+    .ana-chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; }
+    .ana-chart-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 14px; }
+    .ana-canvas-wrap { position: relative; height: 280px; }
+    .ana-charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 900px) { .ana-charts-row { grid-template-columns: 1fr; } }
+
     /* ── Monitoring ── */
     .mon-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
     .mon-kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
@@ -914,6 +933,13 @@
         <span class="nav-badge" id="monitoring-alert-badge" style="display:none;background:var(--red-bg);color:var(--red);">0</span>
       </div>
 
+      <div class="nav-item" id="nav-analytics" onclick="switchView('analytics')">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2 14V2M2 14h12M5 11V8M8 11V5M11 11V7"/>
+        </svg>
+        Statistiques
+      </div>
+
       <div class="nav-item" id="nav-config" onclick="switchView('config')">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="8" cy="8" r="2.5"/>
@@ -980,6 +1006,81 @@
         <div id="mon-grid" class="mon-grid"></div>
         <div id="mon-empty" style="display:none;color:var(--muted);text-align:center;padding:40px;">
           Aucune session à surveiller.
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Analytics view ── -->
+    <div id="view-analytics">
+      <div class="content-header">
+        <div>
+          <div class="content-title">Statistiques</div>
+          <div class="content-subtitle" id="ana-subtitle">Conversations & affluence</div>
+        </div>
+        <button class="btn btn-ghost" onclick="refreshAnalytics()">
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12.5 7a5.5 5.5 0 1 1-1.6-3.9M12.5 1v3h-3"/>
+          </svg>
+          Rafraîchir
+        </button>
+      </div>
+      <div class="content-body">
+        <!-- Filtres -->
+        <div class="ana-filters">
+          <div class="ana-filter">
+            <label>Période</label>
+            <select id="ana-period" onchange="onAnaPeriodChange()">
+              <option value="1">Aujourd'hui (24h)</option>
+              <option value="7" selected>7 derniers jours</option>
+              <option value="30">30 derniers jours</option>
+              <option value="90">90 derniers jours</option>
+              <option value="custom">Personnalisé…</option>
+            </select>
+          </div>
+          <div class="ana-filter ana-custom" style="display:none;">
+            <label>Du</label>
+            <input type="date" id="ana-from" onchange="refreshAnalytics()" />
+          </div>
+          <div class="ana-filter ana-custom" style="display:none;">
+            <label>Au</label>
+            <input type="date" id="ana-to" onchange="refreshAnalytics()" />
+          </div>
+          <div class="ana-filter">
+            <label>Granularité</label>
+            <select id="ana-granularity" onchange="refreshAnalytics()">
+              <option value="minute">Minute</option>
+              <option value="hour">Heure</option>
+              <option value="day" selected>Jour</option>
+            </select>
+          </div>
+          <div class="ana-filter">
+            <label>Session</label>
+            <select id="ana-session" onchange="refreshAnalytics()">
+              <option value="all">Toutes</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- KPIs -->
+        <div id="ana-kpis" class="mon-kpis"></div>
+
+        <!-- Graphiques -->
+        <div class="ana-chart-card">
+          <div class="ana-chart-title">Conversations & messages dans le temps</div>
+          <div class="ana-canvas-wrap"><canvas id="ana-chart-series"></canvas></div>
+        </div>
+        <div class="ana-charts-row">
+          <div class="ana-chart-card">
+            <div class="ana-chart-title">Affluence par heure de la journée</div>
+            <div class="ana-canvas-wrap"><canvas id="ana-chart-hour"></canvas></div>
+          </div>
+          <div class="ana-chart-card">
+            <div class="ana-chart-title">Affluence par jour de la semaine</div>
+            <div class="ana-canvas-wrap"><canvas id="ana-chart-weekday"></canvas></div>
+          </div>
+        </div>
+        <div id="ana-empty" style="display:none;color:var(--muted);text-align:center;padding:40px;">
+          Aucune donnée sur cette période. Les statistiques se construisent à mesure que des messages arrivent.
         </div>
       </div>
     </div>
@@ -1327,7 +1428,7 @@
 
   // ── Views ──────────────────────────────────────────────────────────────────
   function switchView(view) {
-    ['sessions', 'monitoring', 'config'].forEach(v => {
+    ['sessions', 'monitoring', 'analytics', 'config'].forEach(v => {
       document.getElementById(`view-${v}`).classList.remove('active');
       document.getElementById(`nav-${v}`).classList.remove('active');
     });
@@ -1342,6 +1443,119 @@
     if (view === 'monitoring') {
       refreshMonitoring();
     }
+    if (view === 'analytics') {
+      refreshAnalytics();
+    }
+  }
+
+  // ── Analytics ────────────────────────────────────────────────────────────────
+  let anaCharts = { series: null, hour: null, weekday: null };
+
+  function onAnaPeriodChange() {
+    const custom = document.getElementById('ana-period').value === 'custom';
+    document.querySelectorAll('.ana-custom').forEach(el => el.style.display = custom ? 'flex' : 'none');
+    if (!custom) refreshAnalytics();
+  }
+
+  function anaRange() {
+    const period = document.getElementById('ana-period').value;
+    const now = Date.now();
+    if (period === 'custom') {
+      const f = document.getElementById('ana-from').value;
+      const t = document.getElementById('ana-to').value;
+      return {
+        from: f ? new Date(f + 'T00:00:00').getTime() : now - 7 * 86400000,
+        to:   t ? new Date(t + 'T23:59:59').getTime() : now,
+      };
+    }
+    return { from: now - Number(period) * 86400000, to: now };
+  }
+
+  async function refreshAnalytics() {
+    const { from, to } = anaRange();
+    const gran = document.getElementById('ana-granularity').value;
+    const session = document.getElementById('ana-session').value;
+    try {
+      const d = await apiFetch(`/api/analytics?from=${from}&to=${to}&granularity=${gran}&session=${encodeURIComponent(session)}`);
+      renderAnalytics(d);
+    } catch (e) {
+      document.getElementById('ana-subtitle').textContent = 'Erreur: ' + e.message;
+    }
+  }
+
+  function renderAnalytics(d) {
+    // Remplir le filtre sessions (sans écraser la sélection courante)
+    const sel = document.getElementById('ana-session');
+    const cur = sel.value;
+    const opts = ['all', ...(d.sessionsList || [])];
+    sel.innerHTML = opts.map(s => `<option value="${escapeHtml(s)}">${s === 'all' ? 'Toutes' : escapeHtml(s)}</option>`).join('');
+    sel.value = opts.includes(cur) ? cur : 'all';
+
+    const t = d.totals;
+    document.getElementById('ana-subtitle').textContent =
+      `${t.conversations} conversation(s) · ${t.messages} message(s)`;
+
+    const peakH = t.peakHour !== null ? `${String(t.peakHour).padStart(2,'0')}h` : '—';
+    document.getElementById('ana-kpis').innerHTML = `
+      <div class="mon-kpi"><div class="mon-kpi-label">Conversations</div><div class="mon-kpi-value">${t.conversations}</div></div>
+      <div class="mon-kpi"><div class="mon-kpi-label">Messages</div><div class="mon-kpi-value">${t.messages}</div></div>
+      <div class="mon-kpi"><div class="mon-kpi-label">Msg / conversation</div><div class="mon-kpi-value">${t.avgPerConv}</div></div>
+      <div class="mon-kpi"><div class="mon-kpi-label">Heure de pointe</div><div class="mon-kpi-value">${peakH}</div></div>
+      <div class="mon-kpi"><div class="mon-kpi-label">Jour de pointe</div><div class="mon-kpi-value" style="font-size:18px">${t.peakWeekday || '—'}</div></div>
+    `;
+
+    const empty = document.getElementById('ana-empty');
+    empty.style.display = t.messages === 0 ? 'block' : 'none';
+
+    const accent = '#22c55e', blue = '#60a5fa', grid = 'rgba(255,255,255,0.05)', muted = '#6b6b7e';
+    const baseOpts = (stacked=false) => ({
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: muted, font: { family: 'Outfit' } } } },
+      scales: {
+        x: { ticks: { color: muted, maxRotation: 45, minRotation: 0 }, grid: { color: grid } },
+        y: { ticks: { color: muted, precision: 0 }, grid: { color: grid }, beginAtZero: true },
+      },
+    });
+
+    // Graphe série temporelle
+    const labels = d.series.map(s => s.bucket);
+    drawChart('series', 'ana-chart-series', {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Conversations', data: d.series.map(s => s.conversations), borderColor: accent, backgroundColor: 'rgba(34,197,94,.12)', fill: true, tension: .3, pointRadius: 2 },
+          { label: 'Messages', data: d.series.map(s => s.messages), borderColor: blue, backgroundColor: 'rgba(96,165,250,.10)', fill: true, tension: .3, pointRadius: 2 },
+        ],
+      },
+      options: baseOpts(),
+    });
+
+    // Affluence par heure
+    drawChart('hour', 'ana-chart-hour', {
+      type: 'bar',
+      data: {
+        labels: Array.from({length:24}, (_,i) => `${String(i).padStart(2,'0')}h`),
+        datasets: [{ label: 'Messages', data: d.byHour, backgroundColor: accent }],
+      },
+      options: baseOpts(),
+    });
+
+    // Affluence par jour de semaine
+    drawChart('weekday', 'ana-chart-weekday', {
+      type: 'bar',
+      data: {
+        labels: ['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'],
+        datasets: [{ label: 'Messages', data: d.byWeekday, backgroundColor: blue }],
+      },
+      options: baseOpts(),
+    });
+  }
+
+  function drawChart(key, canvasId, config) {
+    if (typeof Chart === 'undefined') return;  // CDN indisponible
+    if (anaCharts[key]) anaCharts[key].destroy();
+    anaCharts[key] = new Chart(document.getElementById(canvasId), config);
   }
 
   // ── Monitoring ───────────────────────────────────────────────────────────────
