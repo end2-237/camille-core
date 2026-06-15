@@ -609,14 +609,36 @@ app.post('/api/sendVideo', auth, async (req, res) => {
   if (!file?.url) return res.json({ success: true, skipped: true, reason: 'Aucune URL vidéo configurée' });
 
   try {
-    const cl      = getClient(session);
-    const rawId   = formatChatId(chatId);
-    const mediaId = normalizeMediaId(rawId);   // @lid → @c.us pour media
-    console.log('[sendVideo] rawId:', rawId, '→ mediaId:', mediaId, 'url:', file.url);
+    const cl    = getClient(session);
+    const rawId = formatChatId(chatId);
+    console.log('[sendVideo] rawId:', rawId, 'url:', file.url);
+
+    // Résolution @lid → @c.us (même logique que sendVoice)
+    let sendId = rawId;
+    if (rawId.endsWith('@lid')) {
+      try {
+        const contact = await cl.getContactById(rawId);
+        const cus = contact.id && contact.id._serialized;
+        if (cus && cus.endsWith('@c.us')) {
+          sendId = cus;
+        } else if (contact.number && contact.number.length > 5) {
+          sendId = `${contact.number}@c.us`;
+        } else {
+          const chat = await cl.getChatById(rawId);
+          const chatContact = await chat.getContact();
+          if (chatContact.number && chatContact.number.length > 5) {
+            sendId = `${chatContact.number}@c.us`;
+          }
+        }
+        console.log('[sendVideo] sendId résolu:', sendId);
+      } catch (lidErr) {
+        console.warn('[sendVideo] Résolution LID échouée:', lidErr.message);
+      }
+    }
 
     const media = await resolveMedia(file.url);
     await randomDelay(500, 1500);
-    await cl.sendMessage(mediaId, media, { caption });
+    await cl.sendMessage(sendId, media, { caption });
     console.log('[sendVideo] envoyé ✓');
 
     res.json({ success: true });
