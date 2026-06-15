@@ -158,6 +158,8 @@ function createSession(name) {
 
   const data = {
     name, status: 'INITIALIZING', qrBase64: null, client: null, phone: null,
+    phoneNumber:  null,   // numéro pour le pairing code (sans +)
+    pairingCode:  null,   // code 8 chars généré par requestPairingCode()
     // ── État interne de stabilité ──
     reconnecting:    false,  // garde anti-concurrence pour la reconnexion/recréation
     stopped:         false,  // session arrêtée volontairement → ne pas reconnecter
@@ -235,6 +237,23 @@ function spawnClient(data) {
 
   client.on('qr', async (qr) => {
     setStatus('QR_READY');
+    data.pairingCode = null;
+
+    if (data.phoneNumber) {
+      // Mode pairing code : on demande un code à 8 chiffres au lieu du QR
+      try {
+        const code = await client.requestPairingCode(data.phoneNumber);
+        data.pairingCode = code;
+        data.qrBase64 = null;
+        console.log(`[${name}] 📲 Code de couplage prêt: ${code}`);
+        io.emit('session:update', { name, status: data.status, pairingCode: code });
+        return;
+      } catch (e) {
+        console.error(`[${name}] requestPairingCode échoué (${e.message}) — fallback QR`);
+        // fallback au QR si le pairing code échoue
+      }
+    }
+
     data.qrBase64 = await QRCode.toDataURL(qr);
     io.emit('session:update', { name, status: data.status, qr: data.qrBase64 });
     console.log(`[${name}] 📱 QR Code prêt — scannez depuis le dashboard`);
@@ -249,6 +268,7 @@ function spawnClient(data) {
   client.on('ready', async () => {
     setStatus('CONNECTED');
     data.qrBase64 = null;
+    data.pairingCode = null;
     data.reconnecting = false;        // succès → libère la garde
     data.metrics.reconnectCount = 0;  // remet le backoff à zéro
     try {
@@ -473,9 +493,10 @@ app.get('/health', (_req, res) => res.json({ ok: true, sessions: sessions.size }
 app.get('/api/sessions', auth, (_req, res) => {
   res.json({
     sessions: [...sessions.values()].map(s => ({
-      name:   s.name,
-      status: s.status,
-      hasQr:  !!s.qrBase64,
+      name:        s.name,
+      status:      s.status,
+      hasQr:       !!s.qrBase64,
+      pairingCode: s.pairingCode || null,
     })),
   });
 });
@@ -515,7 +536,39 @@ app.delete('/api/sessions/:name/reset', auth, async (req, res) => {
 app.get('/api/sessions/:name/status', auth, (req, res) => {
   const s = sessions.get(req.params.name);
   if (!s) return res.status(404).json({ error: 'Session introuvable' });
-  res.json({ name: s.name, status: s.status, phone: s.phone || null });
+  res.json({ name: s.name, status: s.status, phone: s.phone || null, pairingCode: s.pairingCode || null });
+});
+
+// POST /api/sessions/:name/pairing-code  { phone }
+// Génère un code à 8 chars à saisir dans WhatsApp → Appareils liés → Lier avec numéro
+app.post('/api/sessions/:name/pairing-code', auth, async (req, res) => {
+  const { name } = req.params;
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ error: 'phone requis (ex: 22890123456 — sans + ni espaces)' });
+
+  const data = sessions.get(name);
+  if (!data) return res.status(404).json({ error: 'Session introuvable' });
+
+  const normalizedPhone = String(phone).replace(/[^0-9]/g, '');
+  if (normalizedPhone.length < 7) return res.status(400).json({ error: 'Numéro invalide' });
+  data.phoneNumber = normalizedPhone;
+
+  if (data.status === 'QR_READY' && data.client) {
+    try {
+      const code = await data.client.requestPairingCode(normalizedPhone);
+      data.pairingCode = code;
+      data.qrBase64 = null;
+      console.log(`[${name}] 📲 Pairing code: ${code}`);
+      io.emit('session:update', { name, status: data.status, pairingCode: code });
+      return res.json({ success: true, code });
+    } catch (e) {
+      console.error(`[${name}] requestPairingCode error:`, e.message);
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
+  // Session pas encore en QR_READY : le numéro est enregistré, le code sera généré au prochain QR
+  res.json({ success: true, message: 'Numéro enregistré — le code sera généré au prochain cycle QR' });
 });
 
 app.get('/api/sessions/:name/qr', auth, (req, res) => {
@@ -1005,11 +1058,11 @@ app.delete('/api/media/:filename', auth, (req, res) => {
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 
 io.on('connection', (socket) => {
-  // Envoyer l'état actuel au nouveau client web
   socket.emit('init', [...sessions.values()].map(s => ({
-    name:   s.name,
-    status: s.status,
-    qr:     s.qrBase64,
+    name:        s.name,
+    status:      s.status,
+    qr:          s.qrBase64,
+    pairingCode: s.pairingCode || null,
   })));
 });
 
