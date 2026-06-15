@@ -102,7 +102,23 @@ function createSession(name) {
   if (sessions.has(name)) return sessions.get(name);
   cleanLockFiles(name);
 
-  const data = { name, status: 'INITIALIZING', qrBase64: null, client: null, phone: null };
+  const data = {
+    name, status: 'INITIALIZING', qrBase64: null, client: null, phone: null,
+    // ── Métriques de monitoring ──
+    metrics: {
+      createdAt:        Date.now(),
+      statusChangedAt:  Date.now(),
+      lastMessageAt:    null,   // dernier message REÇU d'un contact
+      messageCount:     0,      // total messages reçus
+      lastWebhookOkAt:  null,   // dernier forward n8n réussi
+      reconnectCount:   0,      // nombre de tentatives de reconnexion
+      lastDisconnect:   null,   // { reason, at }
+      webhookErrors:    0,
+      mediaErrors:      0,
+      lastError:        null,   // { msg, at }
+      emptyBodyCount:   0,      // messages reçus avec body vide (symptôme zombie)
+    },
+  };
   sessions.set(name, data);
 
   const client = new Client({
@@ -131,21 +147,25 @@ function createSession(name) {
 
   // ── Événements WhatsApp ───────────────────────────────────────────────────
 
+  // Helper : marque un changement de statut (pour le monitoring)
+  const setStatus = (s) => { data.status = s; data.metrics.statusChangedAt = Date.now(); };
+
   client.on('qr', async (qr) => {
     data.status   = 'QR_READY';
+    data.metrics.statusChangedAt = Date.now();
     data.qrBase64 = await QRCode.toDataURL(qr);
     io.emit('session:update', { name, status: data.status, qr: data.qrBase64 });
     console.log(`[${name}] 📱 QR Code prêt — scannez depuis le dashboard`);
   });
 
   client.on('authenticated', () => {
-    data.status = 'AUTHENTICATED';
+    setStatus('AUTHENTICATED');
     io.emit('session:update', { name, status: data.status });
     console.log(`[${name}] 🔐 Authentifié`);
   });
 
   client.on('ready', async () => {
-    data.status   = 'CONNECTED';
+    setStatus('CONNECTED');
     data.qrBase64 = null;
     try {
       const info = await client.getInfo();
@@ -156,19 +176,25 @@ function createSession(name) {
   });
 
   client.on('auth_failure', (msg) => {
-    data.status = 'AUTH_FAILURE';
+    setStatus('AUTH_FAILURE');
+    data.metrics.lastError = { msg: `auth_failure: ${msg}`, at: Date.now() };
     io.emit('session:update', { name, status: data.status });
     console.error(`[${name}] ❌ Échec auth: ${msg}`);
   });
 
   client.on('disconnected', (reason) => {
-    data.status = 'DISCONNECTED';
+    setStatus('DISCONNECTED');
+    data.metrics.lastDisconnect = { reason: String(reason), at: Date.now() };
     io.emit('session:update', { name, status: data.status });
     console.log(`[${name}] 🔌 Déconnecté: ${reason}`);
     // Tenter reconnexion après 10 s
     setTimeout(() => {
-      console.log(`[${name}] 🔄 Tentative reconnexion...`);
-      client.initialize().catch(e => console.error(`[${name}] Reconnexion failed:`, e.message));
+      data.metrics.reconnectCount += 1;
+      console.log(`[${name}] 🔄 Tentative reconnexion (#${data.metrics.reconnectCount})...`);
+      client.initialize().catch(e => {
+        data.metrics.lastError = { msg: `reconnect: ${e.message}`, at: Date.now() };
+        console.error(`[${name}] Reconnexion failed:`, e.message);
+      });
     }, 10_000);
   });
 
@@ -176,6 +202,14 @@ function createSession(name) {
 
   client.on('message', async (msg) => {
     if (msg.fromMe) return;
+
+    // ── Monitoring : compteur + détection de zombie (body vide) ──
+    data.metrics.lastMessageAt = Date.now();
+    data.metrics.messageCount += 1;
+    if ((!msg.body || msg.body.trim() === '') && msg.type === 'chat') {
+      data.metrics.emptyBodyCount += 1;
+      console.warn(`[${name}] ⚠️  Message body vide (type=chat) — symptôme zombie possible (#${data.metrics.emptyBodyCount})`);
+    }
 
     // Support webhook par session : N8N_WEBHOOK_MONSESSION ou N8N_WEBHOOK_URL global
     const webhookUrl = webhookConfig.sessions[name]
@@ -198,7 +232,10 @@ function createSession(name) {
           notifyName: msg._data?.notifyName || '',
         },
       }, { timeout: 8000 });
+      data.metrics.lastWebhookOkAt = Date.now();
     } catch (err) {
+      data.metrics.webhookErrors += 1;
+      data.metrics.lastError = { msg: `webhook: ${err.message}`, at: Date.now() };
       console.error(`[${name}] Webhook error:`, err.message);
     }
   });
@@ -458,6 +495,8 @@ app.post('/api/sendVoice', auth, async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     const msg = (err && typeof err === 'object') ? err.message : String(err);
+    const sd = sessions.get(session);
+    if (sd?.metrics) { sd.metrics.mediaErrors += 1; sd.metrics.lastError = { msg: `sendVoice: ${msg}`, at: Date.now() }; }
     console.error('[sendVoice] ERREUR FINALE:', msg);
     res.status(500).json({ success: false, error: msg });
   }
@@ -482,6 +521,8 @@ app.post('/api/sendVideo', auth, async (req, res) => {
 
     res.json({ success: true });
   } catch (err) {
+    const sd = sessions.get(session);
+    if (sd?.metrics) { sd.metrics.mediaErrors += 1; sd.metrics.lastError = { msg: `sendVideo: ${err.message}`, at: Date.now() }; }
     console.error('[sendVideo] ERREUR FINALE:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
@@ -543,6 +584,92 @@ app.get('/api/server/info', auth, (_req, res) => {
     uptime:   Math.floor((Date.now() - START_TIME) / 1000),
     sessions: sessions.size,
     connected: [...sessions.values()].filter(s => s.status === 'CONNECTED').length,
+  });
+});
+
+// ── Monitoring détaillé ─────────────────────────────────────────────────────────
+// GET /api/health/detailed — état santé par session + ressources process
+// Utilisé par la section "Monitoring" du dashboard.
+
+const ZOMBIE_SILENCE_MS = 30 * 60 * 1000; // 30 min sans message = suspect si trafic habituel
+
+function sessionHealth(s) {
+  const m = s.metrics || {};
+  const now = Date.now();
+  const issues = [];
+  let health = 'ok'; // ok | warn | critical
+
+  if (s.status !== 'CONNECTED') {
+    health = s.status === 'DISCONNECTED' || s.status === 'AUTH_FAILURE' || s.status === 'ERROR' ? 'critical' : 'warn';
+    issues.push(`Statut: ${s.status}`);
+  }
+
+  // Zombie suspect : connecté mais bodies vides récents
+  if (s.status === 'CONNECTED' && m.emptyBodyCount > 0) {
+    health = 'critical';
+    issues.push(`${m.emptyBodyCount} message(s) à body vide — session zombie probable`);
+  }
+
+  // Reconnexions répétées
+  if (m.reconnectCount >= 3) {
+    if (health === 'ok') health = 'warn';
+    issues.push(`${m.reconnectCount} reconnexions`);
+  }
+
+  // Erreurs webhook
+  if (m.webhookErrors > 0) {
+    if (health === 'ok') health = 'warn';
+    issues.push(`${m.webhookErrors} erreur(s) webhook n8n`);
+  }
+
+  // Silence prolongé (info seulement)
+  const silenceMs = m.lastMessageAt ? now - m.lastMessageAt : null;
+  if (s.status === 'CONNECTED' && silenceMs !== null && silenceMs > ZOMBIE_SILENCE_MS && m.messageCount > 0) {
+    if (health === 'ok') health = 'warn';
+    issues.push(`Aucun message depuis ${Math.round(silenceMs / 60000)} min`);
+  }
+
+  return {
+    name:             s.name,
+    status:           s.status,
+    phone:            s.phone || null,
+    health,
+    issues,
+    messageCount:     m.messageCount || 0,
+    emptyBodyCount:   m.emptyBodyCount || 0,
+    reconnectCount:   m.reconnectCount || 0,
+    webhookErrors:    m.webhookErrors || 0,
+    mediaErrors:      m.mediaErrors || 0,
+    lastMessageAt:    m.lastMessageAt || null,
+    lastWebhookOkAt:  m.lastWebhookOkAt || null,
+    statusChangedAt:  m.statusChangedAt || null,
+    createdAt:        m.createdAt || null,
+    lastDisconnect:   m.lastDisconnect || null,
+    lastError:        m.lastError || null,
+    silenceMs,
+  };
+}
+
+app.get('/api/health/detailed', auth, (_req, res) => {
+  const mem = process.memoryUsage();
+  const list = [...sessions.values()].map(sessionHealth);
+  res.json({
+    now:      Date.now(),
+    uptime:   Math.floor((Date.now() - START_TIME) / 1000),
+    version:  VERSION,
+    process: {
+      rssMB:        Math.round(mem.rss / 1048576),
+      heapUsedMB:   Math.round(mem.heapUsed / 1048576),
+      heapTotalMB:  Math.round(mem.heapTotal / 1048576),
+      externalMB:   Math.round((mem.external || 0) / 1048576),
+    },
+    summary: {
+      total:     list.length,
+      connected: list.filter(s => s.status === 'CONNECTED').length,
+      critical:  list.filter(s => s.health === 'critical').length,
+      warn:      list.filter(s => s.health === 'warn').length,
+    },
+    sessions: list,
   });
 });
 
