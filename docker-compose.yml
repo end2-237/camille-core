@@ -4,17 +4,26 @@ services:
   camille-core:
     build: .
     # NE PAS mettre container_name ni ports — Coolify les gère
+    init: true          # tini comme PID 1 via Docker (alternative si tini absent du layer)
+    restart: unless-stopped
+    mem_limit: 1536m    # 1.5 Go max — si Chrome fuit, le conteneur seul redémarre
+    memswap_limit: 1536m # pas de swap pour ce conteneur (le swap hôte reste pour les autres)
+    shm_size: '512mb'   # /dev/shm partagé entre Chrome et ses renderers (256mb était trop juste)
     volumes:
-      # Volume nommé — Coolify le persiste automatiquement
+      # Sessions WhatsApp (LocalAuth) — survit aux redémarrages et rebuilds
       - sessions-data:/app/sessions
+      # Media uploadés — survit aux redémarrages
+      - media-data:/app/public/media
     environment:
       - PORT=3000
       - API_KEY=${API_KEY:-camille-core-secret}
       - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL:-}
       - N8N_WEBHOOK_DEFAULT=${N8N_WEBHOOK_DEFAULT:-}
       - PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-    shm_size: '256mb'
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
+      - SESSIONS_DIR=/app/sessions
+      - CORE_PUBLIC_URL=${CORE_PUBLIC_URL:-}
 
 volumes:
   sessions-data:
+  media-data:
