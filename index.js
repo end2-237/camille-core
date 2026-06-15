@@ -161,19 +161,25 @@ function spawnClient(data) {
   const client = new Client({
     authStrategy: new LocalAuth({ clientId: name, dataPath: SESSIONS_DIR }),
     ...versionOpts,
-    restartOnAuthFail: true,   // relance proprement plutôt que de rester bloqué sur auth_failure
+    restartOnAuthFail: true,
     puppeteer: {
       headless: true,
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      // NB : --single-process RETIRÉ — c'était la cause n°1 des crashs renderer silencieux.
-      // --no-zygote retiré aussi (n'a de sens qu'avec --single-process).
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-gpu',
-        '--disable-dev-shm-usage',
+        '--disable-dev-shm-usage',   // utilise /dev/shm monté par Docker (shm_size 512mb)
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--disable-default-apps',
+        '--disable-sync',
+        '--metrics-recording-only',
+        '--mute-audio',
+        '--no-default-browser-check',
+        '--safebrowsing-disable-auto-update',
       ],
     },
   });
