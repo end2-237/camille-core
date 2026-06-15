@@ -868,6 +868,65 @@
 
     /* ─── DIVIDER ──────────────────────────────────────────────────────────── */
     .divider { height: 1px; background: var(--border); margin: 4px 0; }
+
+    /* ─── PAIRING CODE ─────────────────────────────────────────────────────── */
+    .pairing-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .pairing-code-display {
+      text-align: center;
+      padding: 16px 12px;
+      background: var(--surface2);
+      border: 1px solid var(--accent-border);
+      border-radius: var(--radius-sm);
+    }
+    .pairing-code-value {
+      font-family: var(--mono);
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 6px;
+    }
+    .pairing-code-hint {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 6px;
+      line-height: 1.6;
+    }
+    .pairing-form {
+      display: flex;
+      gap: 6px;
+    }
+    .pairing-form input {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 8px 10px;
+      outline: none;
+      transition: border-color .2s;
+      min-width: 0;
+    }
+    .pairing-form input:focus { border-color: var(--accent); }
+    .pairing-form input::placeholder { color: var(--muted2); }
+    .pairing-or {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--muted2);
+    }
+    .pairing-or::before, .pairing-or::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
   </style>
 </head>
 <body>
@@ -1410,10 +1469,10 @@
       updateSessionBadge();
     });
 
-    socket.on('session:update', ({ name, status, qr }) => {
+    socket.on('session:update', ({ name, status, qr, pairingCode }) => {
       const existing = document.getElementById(`card-${CSS.escape(name)}`);
       if (existing) existing.remove();
-      renderCard({ name, status, qr });
+      renderCard({ name, status, qr, pairingCode });
       syncEmpty();
       updateSessionBadge();
     });
@@ -1642,6 +1701,27 @@
     return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
+  // ── Pairing code ───────────────────────────────────────────────────────────
+  async function requestPairingCode(name) {
+    const input = document.getElementById(`pair-phone-${escHtml(name)}`);
+    const phone = input ? input.value.trim().replace(/[^0-9]/g, '') : '';
+    if (!phone || phone.length < 7) { toast('Entrez un numéro valide (ex: 22890123456)', 'error'); return; }
+
+    try {
+      const res = await apiFetch(`/api/sessions/${encodeURIComponent(name)}/pairing-code`, {
+        method: 'POST', body: { phone },
+      });
+      if (res.code) {
+        toast(`Code généré : ${res.code}`, 'success');
+        // Le socket va mettre à jour la carte via session:update
+      } else {
+        toast(res.message || 'Numéro enregistré', 'info');
+      }
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
   // ── Session count badge ────────────────────────────────────────────────────
   function updateSessionBadge() {
     const count = document.getElementById('sessions-grid').children.length;
@@ -1679,19 +1759,39 @@
     return map[status] || status;
   }
 
-  function renderCard({ name, status, qr, phone }) {
+  function renderCard({ name, status, qr, phone, pairingCode }) {
     const card = document.createElement('div');
     card.className = 'session-card';
     card.id = `card-${CSS.escape(name)}`;
 
     let body = '';
 
-    if (status === 'QR_READY' && qr) {
-      body = `
-        <div class="qr-wrapper">
-          <img src="${qr}" alt="QR ${name}" />
+    if (status === 'QR_READY') {
+      const codeSection = pairingCode ? `
+        <div class="pairing-code-display">
+          <div class="pairing-code-value">${escHtml(pairingCode)}</div>
+          <div class="pairing-code-hint">Entrez ce code dans WhatsApp →<br>Appareils liés → Lier un appareil → Lier avec numéro de téléphone</div>
         </div>
-        <p class="qr-hint">Ouvrez WhatsApp → Appareils liés → Lier un appareil</p>
+        <div class="pairing-or">ou</div>
+      ` : '';
+
+      const qrSection = qr ? `
+        <div class="qr-wrapper">
+          <img src="${qr}" alt="QR ${escHtml(name)}" />
+        </div>
+        <p class="qr-hint">Scannez ce QR depuis WhatsApp → Appareils liés → Lier un appareil</p>
+        <div class="pairing-or">ou connectez par numéro</div>
+      ` : (!pairingCode ? `<div style="text-align:center;padding:8px 0;font-size:12px;color:var(--muted)">Génération du QR en cours…</div>` : '');
+
+      body = `
+        ${codeSection}
+        ${qrSection}
+        <div class="pairing-section">
+          <div class="pairing-form">
+            <input type="tel" id="pair-phone-${escHtml(name)}" placeholder="Ex: 22890123456 (sans +)" />
+            <button class="btn btn-ghost btn-sm" onclick="requestPairingCode('${escHtml(name)}')">Obtenir code</button>
+          </div>
+        </div>
       `;
     } else if (status === 'CONNECTED') {
       body = `
