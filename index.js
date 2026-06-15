@@ -30,6 +30,7 @@ const WATCHDOG_INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS) || 60_000;
 const RECONNECT_BASE_MS    = Number(process.env.RECONNECT_BASE_MS)    || 5_000;   // backoff initial
 const RECONNECT_MAX_MS     = 5 * 60_000;                                          // backoff plafonné à 5 min
 const MAX_RECONNECT_TRIES  = Number(process.env.MAX_RECONNECT_TRIES)  || 10;      // au-delà → garde le QR/erreur, stoppe la boucle
+const INIT_TIMEOUT_MS      = Number(process.env.INIT_TIMEOUT_MS)      || 180_000; // bloqué à INITIALIZING/AUTHENTICATED > 3 min → recréation forcée
 // Version WhatsApp Web épinglée : évite que le store casse lors d'une MAJ WA côté serveur.
 // OPT-IN : actif seulement si WWEB_VERSION est défini (sinon comportement natif de la lib).
 // Pinner une version inexistante casserait la connexion → on ne force RIEN par défaut.
@@ -375,7 +376,24 @@ function startWatchdog(data) {
   clearInterval(data.watchdogTimer);
   data.watchdogTimer = setInterval(async () => {
     if (data.stopped || data.reconnecting) return;
-    // On ne sonde que les sessions censées être connectées
+
+    // ── Détection de blocage d'init ──
+    // Une session coincée en INITIALIZING/AUTHENTICATED (resync qui ne finit
+    // jamais, store cassé) ne déclenche aucun event → elle resterait bloquée
+    // indéfiniment. Au-delà de INIT_TIMEOUT_MS, on force une recréation propre.
+    if (data.status === 'INITIALIZING' || data.status === 'AUTHENTICATED') {
+      const stuckMs = Date.now() - data.metrics.statusChangedAt;
+      if (stuckMs > INIT_TIMEOUT_MS) {
+        data.metrics.zombieKills += 1;
+        data.metrics.lastError = { msg: `init bloqué à ${data.status} depuis ${Math.round(stuckMs/1000)}s`, at: Date.now() };
+        console.warn(`[${name}] ⏳ Watchdog : bloqué à ${data.status} depuis ${Math.round(stuckMs/1000)}s → recréation forcée`);
+        scheduleReconnect(name, `init stuck ${data.status} ${Math.round(stuckMs/1000)}s`);
+      }
+      return;
+    }
+
+    // On ne sonde getState() que sur les sessions censées être connectées
+    // (QR_READY = en attente de scan utilisateur = légitimement long, on ne touche pas)
     if (data.status !== 'CONNECTED') return;
     try {
       const state = await Promise.race([
