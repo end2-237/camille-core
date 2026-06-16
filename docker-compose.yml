@@ -6,6 +6,7 @@ services:
     # NE PAS mettre container_name ni ports — Coolify les gère
     init: true          # tini comme PID 1 via Docker (alternative si tini absent du layer)
     restart: unless-stopped
+    cpus: "1.5"          # max 1,5 cœur — Chrome ne peut plus saturer le VPS 2 cœurs
     mem_limit: 1536m    # 1.5 Go max — si Chrome fuit, le conteneur seul redémarre
     memswap_limit: 1536m # pas de swap pour ce conteneur (le swap hôte reste pour les autres)
     shm_size: '512mb'   # /dev/shm partagé entre Chrome et ses renderers (256mb était trop juste)

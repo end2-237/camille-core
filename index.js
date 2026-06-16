@@ -35,6 +35,7 @@ const INIT_TIMEOUT_MS      = Number(process.env.INIT_TIMEOUT_MS)      || 180_000
 // OPT-IN : actif seulement si WWEB_VERSION est défini (sinon comportement natif de la lib).
 // Pinner une version inexistante casserait la connexion → on ne force RIEN par défaut.
 const WWEB_VERSION = process.env.WWEB_VERSION || '';
+const MAX_SESSIONS = Number(process.env.MAX_SESSIONS) || 2;  // plafond de sessions simultanées
 
 // Créer le dossier media au démarrage
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
@@ -451,15 +452,19 @@ async function stopSession(name) {
 // Auto-démarrage des sessions persistées sur disque
 function autoStartSessions() {
   if (!fs.existsSync(SESSIONS_DIR)) return;
-  fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
+  const dirs = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
     .filter(d => d.isDirectory() && d.name.startsWith('session-'))
-    .forEach(d => {
-      const name = d.name.replace(/^session-/, '');
-      if (name) {
-        console.log(`[Auto-start] Reprise session: ${name}`);
-        createSession(name);
-      }
-    });
+    .map(d => d.name.replace(/^session-/, ''))
+    .filter(Boolean);
+
+  if (dirs.length > MAX_SESSIONS) {
+    console.warn(`[Auto-start] ${dirs.length} sessions sur disque, limite=${MAX_SESSIONS} — seules les ${MAX_SESSIONS} premières seront démarrées`);
+  }
+
+  dirs.slice(0, MAX_SESSIONS).forEach(name => {
+    console.log(`[Auto-start] Reprise session: ${name}`);
+    createSession(name);
+  });
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -504,6 +509,9 @@ app.get('/api/sessions', auth, (_req, res) => {
 app.post('/api/sessions/start', auth, (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'name requis' });
+  if (!sessions.has(name) && sessions.size >= MAX_SESSIONS) {
+    return res.status(429).json({ error: `Limite atteinte : ${MAX_SESSIONS} sessions maximum (configurable via MAX_SESSIONS)` });
+  }
   const s = createSession(name);
   res.json({ success: true, name: s.name, status: s.status });
 });
