@@ -1,19 +1,31 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Camille Core — WhatsApp API Gateway
-// Remplace WAHA Plus : multi-sessions, envoi audio/vidéo/doc sans limite,
-// QR code accessible via HTTP + WebSocket, anti-ban intégré.
+// Camille Core — WhatsApp API Gateway (v2 — Baileys)
+// Multi-sessions, envoi audio/vidéo/doc sans limite, QR + pairing code,
+// reconnexion auto, watchdog, analytics. SANS Chrome/Puppeteer → ultra léger.
+// API HTTP & dashboard 100% compatibles avec la v1 (n8n inchangé).
 // ─────────────────────────────────────────────────────────────────────────────
 
 'use strict';
 
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const makeWASocket = require('@whiskeysockets/baileys').default;
+const {
+  useMultiFileAuthState,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
+  DisconnectReason,
+} = require('@whiskeysockets/baileys');
+
 const express  = require('express');
 const http     = require('http');
 const { Server } = require('socket.io');
 const QRCode   = require('qrcode');
 const axios    = require('axios');
 const path     = require('path');
-const fs       = require('fs');
+const fs        = require('fs');
+const pino     = require('pino');
+
+// Logger Baileys silencieux (évite de noyer les logs et la consommation CPU)
+const logger = pino({ level: process.env.BAILEYS_LOG_LEVEL || 'silent' });
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -22,28 +34,23 @@ const API_KEY       = process.env.API_KEY       || 'camille-core-secret';
 const N8N_WEBHOOK   = process.env.N8N_WEBHOOK_URL || '';
 const SESSIONS_DIR  = process.env.SESSIONS_DIR  || './sessions';
 const MEDIA_DIR     = path.join(__dirname, 'public', 'media');
-const VERSION       = '1.2.0';
+const VERSION       = '2.0.0';
 const START_TIME    = Date.now();
 
 // ── Stabilité : watchdog & reconnexion ────────────────────────────────────────
-const WATCHDOG_INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS) || 60_000;  // sonde getState() toutes les 60s
+const WATCHDOG_INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS) || 60_000;  // surveillance toutes les 60s
 const RECONNECT_BASE_MS    = Number(process.env.RECONNECT_BASE_MS)    || 5_000;   // backoff initial
 const RECONNECT_MAX_MS     = 5 * 60_000;                                          // backoff plafonné à 5 min
-const MAX_RECONNECT_TRIES  = Number(process.env.MAX_RECONNECT_TRIES)  || 10;      // au-delà → garde le QR/erreur, stoppe la boucle
-const INIT_TIMEOUT_MS      = Number(process.env.INIT_TIMEOUT_MS)      || 180_000; // bloqué à INITIALIZING/AUTHENTICATED > 3 min → recréation forcée
-// Version WhatsApp Web épinglée : évite que le store casse lors d'une MAJ WA côté serveur.
-// OPT-IN : actif seulement si WWEB_VERSION est défini (sinon comportement natif de la lib).
-// Pinner une version inexistante casserait la connexion → on ne force RIEN par défaut.
-const WWEB_VERSION = process.env.WWEB_VERSION || '';
-const MAX_SESSIONS = Number(process.env.MAX_SESSIONS) || 2;  // plafond de sessions simultanées
+const MAX_RECONNECT_TRIES  = Number(process.env.MAX_RECONNECT_TRIES)  || 10;      // au-delà → stoppe la boucle
+const INIT_TIMEOUT_MS      = Number(process.env.INIT_TIMEOUT_MS)      || 180_000; // bloqué en init > 3 min → recréation forcée
+// Plafond de sessions simultanées (anti-surcharge serveur). Baileys est léger,
+// mais on garde une limite stricte par sécurité (CPU/RAM du VPS).
+const MAX_SESSIONS         = Number(process.env.MAX_SESSIONS)         || 2;
 
 // Créer le dossier media au démarrage
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
 // ── Analytics : journal des messages entrants (persistant) ────────────────────
-// Stocke un événement léger par message reçu pour produire des statistiques :
-// nombre de conversations (contacts uniques), messages, affluence par heure/jour…
-// Persisté en JSONL dans le volume `sessions` (survit aux redéploiements).
 const ANALYTICS_FILE       = path.join(SESSIONS_DIR, 'analytics.jsonl');
 const ANALYTICS_RETENTION_DAYS = Number(process.env.ANALYTICS_RETENTION_DAYS) || 90;
 let analyticsEvents = [];   // [{ t: ms, s: session, f: from }]
@@ -69,7 +76,6 @@ function recordAnalytics(session, from) {
   });
 }
 
-// Compaction quotidienne : réécrit le fichier en ne gardant que la rétention
 function compactAnalytics() {
   try {
     const cutoff = Date.now() - ANALYTICS_RETENTION_DAYS * 86400000;
@@ -81,6 +87,8 @@ function compactAnalytics() {
   } catch (e) { console.warn('[analytics] compact error:', e.message); }
 }
 
+// S'assurer que SESSIONS_DIR existe (pour analytics + auth)
+if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 loadAnalytics();
 setInterval(compactAnalytics, 24 * 3600 * 1000);
 
@@ -117,42 +125,60 @@ const auth = (req, res, next) => {
   next();
 };
 
+// ── Helpers JID (compatibilité n8n : on expose le format @c.us comme la v1) ───
+// Baileys utilise @s.whatsapp.net (user), @g.us (groupe), @lid (linked id).
+// La v1 (whatsapp-web.js) utilisait @c.us. Pour ne RIEN changer côté n8n,
+// on convertit dans les deux sens.
+
+function toJid(chatId) {
+  if (!chatId) return null;
+  let s = String(chatId).trim();
+  if (s.includes('@')) {
+    if (s.endsWith('@c.us')) return s.replace(/@c\.us$/, '@s.whatsapp.net');
+    return s; // @s.whatsapp.net, @g.us, @lid : conservés
+  }
+  const num = s.replace(/[^0-9]/g, '');
+  return `${num}@s.whatsapp.net`;
+}
+
+// Présente un JID Baileys au format hérité @c.us (ce que n8n attend)
+function toLegacyId(jid) {
+  if (!jid) return jid;
+  if (jid.endsWith('@s.whatsapp.net')) return jid.replace(/@s\.whatsapp\.net$/, '@c.us');
+  return jid; // @g.us, @lid : laissés tels quels
+}
+
+// Extrait le texte d'un message Baileys
+function extractBody(m) {
+  const msg = m.message || {};
+  return msg.conversation
+    || msg.extendedTextMessage?.text
+    || msg.imageMessage?.caption
+    || msg.videoMessage?.caption
+    || msg.buttonsResponseMessage?.selectedButtonId
+    || msg.listResponseMessage?.singleSelectReply?.selectedRowId
+    || msg.templateButtonReplyMessage?.selectedId
+    || '';
+}
+
+function msgType(m) {
+  const msg = m.message || {};
+  if (msg.conversation || msg.extendedTextMessage) return 'chat';
+  if (msg.imageMessage)    return 'image';
+  if (msg.videoMessage)    return 'video';
+  if (msg.audioMessage)    return msg.audioMessage.ptt ? 'ptt' : 'audio';
+  if (msg.documentMessage) return 'document';
+  if (msg.stickerMessage)  return 'sticker';
+  if (msg.locationMessage) return 'location';
+  if (msg.contactMessage)  return 'vcard';
+  return 'unknown';
+}
+
 // ── Session Manager ───────────────────────────────────────────────────────────
-//
-//  Chaque "session" = 1 numéro WhatsApp = 1 instance Client whatsapp-web.js
-//  sessions Map : name → { name, status, qrBase64, client }
-//
+//  Chaque "session" = 1 numéro WhatsApp = 1 socket Baileys
+//  sessions Map : name → { name, status, client(sock), ... }
 
 const sessions = new Map();
-
-function cleanLockFiles(name) {
-  // Cherche et supprime tous les SingletonLock/Cookie/Socket récursivement
-  // Ces fichiers sont laissés par l'ancien container Docker et bloquent Chromium
-  const sessionDir = path.join(SESSIONS_DIR, `session-${name}`);
-  if (!fs.existsSync(sessionDir)) return;
-
-  const LOCK_FILES = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
-
-  function removeLocks(dir) {
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (LOCK_FILES.includes(entry.name)) {
-        try {
-          fs.rmSync(fullPath, { force: true });
-          console.log(`[${name}] 🧹 Lock supprimé: ${fullPath}`);
-        } catch (e) {
-          console.warn(`[${name}] ⚠️  Impossible de supprimer ${fullPath}: ${e.message}`);
-        }
-      } else if (entry.isDirectory()) {
-        removeLocks(fullPath);
-      }
-    }
-  }
-
-  removeLocks(sessionDir);
-}
 
 function createSession(name) {
   if (sessions.has(name)) return sessions.get(name);
@@ -161,225 +187,245 @@ function createSession(name) {
     name, status: 'INITIALIZING', qrBase64: null, client: null, phone: null,
     phoneNumber:  null,   // numéro pour le pairing code (sans +)
     pairingCode:  null,   // code 8 chars généré par requestPairingCode()
+    saveCreds:    null,   // fonction de persistance des creds Baileys
     // ── État interne de stabilité ──
-    reconnecting:    false,  // garde anti-concurrence pour la reconnexion/recréation
-    stopped:         false,  // session arrêtée volontairement → ne pas reconnecter
-    watchdogTimer:   null,   // setInterval du watchdog
-    reconnectTimer:  null,   // setTimeout de la reconnexion programmée
-    // ── Métriques de monitoring ──
+    reconnecting:    false,
+    stopped:         false,
+    watchdogTimer:   null,
+    reconnectTimer:  null,
+    // ── Métriques de monitoring (identiques v1 pour le dashboard) ──
     metrics: {
       createdAt:        Date.now(),
       statusChangedAt:  Date.now(),
-      lastMessageAt:    null,   // dernier message REÇU d'un contact
-      messageCount:     0,      // total messages reçus
-      lastWebhookOkAt:  null,   // dernier forward n8n réussi
-      reconnectCount:   0,      // nombre de tentatives de reconnexion
-      lastDisconnect:   null,   // { reason, at }
+      lastMessageAt:    null,
+      messageCount:     0,
+      lastWebhookOkAt:  null,
+      reconnectCount:   0,
+      lastDisconnect:   null,
       webhookErrors:    0,
       mediaErrors:      0,
-      lastError:        null,   // { msg, at }
-      emptyBodyCount:   0,      // messages reçus avec body vide (symptôme zombie)
-      zombieKills:      0,      // nombre de fois où le watchdog a recréé un client zombie
-      lastWatchdogAt:   null,   // dernière sonde getState() réussie
+      lastError:        null,
+      emptyBodyCount:   0,
+      zombieKills:      0,   // ici = recréations forcées par le watchdog (init bloqué)
+      lastWatchdogAt:   null,
     },
   };
   sessions.set(name, data);
 
-  spawnClient(data);
+  spawnClient(data).catch(err => {
+    data.status = 'ERROR';
+    data.metrics.lastError = { msg: `spawn: ${err.message}`, at: Date.now() };
+    console.error(`[${name}] spawn error:`, err.message);
+    scheduleReconnect(name, `spawn error: ${err.message}`);
+  });
   startWatchdog(data);
   return data;
 }
 
-// ── spawnClient : construit un client NEUF et l'attache à `data` ──────────────
-// Utilisé au démarrage ET à chaque reconnexion/recréation. Ne touche jamais aux
-// métriques cumulées (elles vivent dans data.metrics), seulement à data.client.
-function spawnClient(data) {
+// ── spawnClient : construit un socket Baileys NEUF et l'attache à `data` ──────
+async function spawnClient(data) {
   const name = data.name;
-  cleanLockFiles(name);   // purge les SingletonLock laissés par un Chromium mort
+  const authDir = path.join(SESSIONS_DIR, `session-${name}`);
 
-  // Épinglage de version OPT-IN : seulement si WWEB_VERSION est défini.
-  const versionOpts = WWEB_VERSION ? {
-    webVersion: WWEB_VERSION,
-    webVersionCache: {
-      type: 'remote',
-      remotePath: `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${WWEB_VERSION}.html`,
-    },
-  } : {};
+  const { state, saveCreds } = await useMultiFileAuthState(authDir);
+  data.saveCreds = saveCreds;
 
-  const client = new Client({
-    authStrategy: new LocalAuth({ clientId: name, dataPath: SESSIONS_DIR }),
-    ...versionOpts,
-    restartOnAuthFail: true,
-    puppeteer: {
-      headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-gpu',
-        '--disable-dev-shm-usage',   // utilise /dev/shm monté par Docker (shm_size 512mb)
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--disable-extensions',
-        '--disable-background-networking',
-        '--disable-default-apps',
-        '--disable-sync',
-        '--metrics-recording-only',
-        '--mute-audio',
-        '--no-default-browser-check',
-        '--safebrowsing-disable-auto-update',
-      ],
+  let version;
+  try {
+    ({ version } = await fetchLatestBaileysVersion());
+  } catch (e) {
+    console.warn(`[${name}] fetchLatestBaileysVersion KO (${e.message}) — version par défaut`);
+  }
+
+  const sock = makeWASocket({
+    version,
+    auth: {
+      creds: state.creds,
+      keys:  makeCacheableSignalKeyStore(state.keys, logger),
     },
+    logger,
+    printQRInTerminal: false,
+    browser: ['Camille Core', 'Chrome', '2.0'],
+    syncFullHistory: false,          // pas d'historique → léger en RAM
+    markOnlineOnConnect: false,      // n'apparaît pas "en ligne" en permanence
+    generateHighQualityLinkPreview: false,
   });
 
-  data.client = client;
+  data.client = sock;
 
   const setStatus = (s) => { data.status = s; data.metrics.statusChangedAt = Date.now(); };
 
-  client.on('qr', async (qr) => {
-    setStatus('QR_READY');
-    data.pairingCode = null;
+  sock.ev.on('creds.update', saveCreds);
 
-    if (data.phoneNumber) {
-      // Mode pairing code : on demande un code à 8 chiffres au lieu du QR
-      try {
-        const code = await client.requestPairingCode(data.phoneNumber);
-        data.pairingCode = code;
+  // ── Connexion / QR / pairing / déconnexion ───────────────────────────────
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      setStatus('QR_READY');
+      data.pairingCode = null;
+      // Mode pairing code : si un numéro est enregistré et qu'on n'est pas
+      // encore appairé, on n'affiche pas le QR (le code sera demandé à part).
+      if (data.phoneNumber && !sock.authState.creds.registered) {
         data.qrBase64 = null;
-        console.log(`[${name}] 📲 Code de couplage prêt: ${code}`);
-        io.emit('session:update', { name, status: data.status, pairingCode: code });
-        return;
-      } catch (e) {
-        console.error(`[${name}] requestPairingCode échoué (${e.message}) — fallback QR`);
-        // fallback au QR si le pairing code échoue
+        maybeRequestPairing(data);
+      } else {
+        try {
+          data.qrBase64 = await QRCode.toDataURL(qr);
+          io.emit('session:update', { name, status: data.status, qr: data.qrBase64 });
+          console.log(`[${name}] 📱 QR Code prêt — scannez depuis le dashboard`);
+        } catch (e) {
+          console.error(`[${name}] QR toDataURL error:`, e.message);
+        }
       }
     }
 
-    data.qrBase64 = await QRCode.toDataURL(qr);
-    io.emit('session:update', { name, status: data.status, qr: data.qrBase64 });
-    console.log(`[${name}] 📱 QR Code prêt — scannez depuis le dashboard`);
-  });
+    if (connection === 'open') {
+      setStatus('CONNECTED');
+      data.qrBase64 = null;
+      data.pairingCode = null;
+      data.reconnecting = false;
+      data.metrics.reconnectCount = 0;
+      try {
+        const id = sock.user?.id || '';
+        data.phone = id.split(':')[0].split('@')[0] || null;
+      } catch { data.phone = null; }
+      io.emit('session:update', { name, status: data.status });
+      console.log(`[${name}] ✅ Connecté et prêt${data.phone ? ' — ' + data.phone : ''}`);
+    }
 
-  client.on('authenticated', () => {
-    setStatus('AUTHENTICATED');
-    io.emit('session:update', { name, status: data.status });
-    console.log(`[${name}] 🔐 Authentifié`);
-  });
+    if (connection === 'close') {
+      const code = lastDisconnect?.error?.output?.statusCode
+                 || lastDisconnect?.error?.output?.payload?.statusCode;
+      data.metrics.lastDisconnect = { reason: String(code || 'unknown'), at: Date.now() };
 
-  client.on('ready', async () => {
-    setStatus('CONNECTED');
-    data.qrBase64 = null;
-    data.pairingCode = null;
-    data.reconnecting = false;        // succès → libère la garde
-    data.metrics.reconnectCount = 0;  // remet le backoff à zéro
-    try {
-      const info = await client.getInfo();
-      data.phone = info?.wid?.user || null;
-    } catch {}
-    io.emit('session:update', { name, status: data.status });
-    console.log(`[${name}] ✅ Connecté et prêt${data.phone ? ' — ' + data.phone : ''}`);
-  });
-
-  client.on('auth_failure', (msg) => {
-    setStatus('AUTH_FAILURE');
-    data.metrics.lastError = { msg: `auth_failure: ${msg}`, at: Date.now() };
-    io.emit('session:update', { name, status: data.status });
-    console.error(`[${name}] ❌ Échec auth: ${msg}`);
-  });
-
-  client.on('disconnected', (reason) => {
-    setStatus('DISCONNECTED');
-    data.metrics.lastDisconnect = { reason: String(reason), at: Date.now() };
-    io.emit('session:update', { name, status: data.status });
-    console.log(`[${name}] 🔌 Déconnecté: ${reason}`);
-    // Reconnexion correcte : destroy() du client mort PUIS client neuf (jamais re-init du zombie)
-    scheduleReconnect(name, `disconnected: ${reason}`);
+      if (code === DisconnectReason.loggedOut) {
+        // Déconnexion DÉFINITIVE côté WhatsApp (appareil délié) → auth invalide.
+        // On purge les creds pour forcer un nouveau QR / pairing.
+        setStatus('AUTH_FAILURE');
+        data.metrics.lastError = { msg: 'loggedOut — appareil délié, re-couplage requis', at: Date.now() };
+        io.emit('session:update', { name, status: data.status });
+        console.warn(`[${name}] ❌ Déconnecté (loggedOut) — re-couplage requis`);
+        try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
+        // On relance un client neuf qui repartira sur un QR/pairing vierge
+        scheduleReconnect(name, 'loggedOut → nouveau couplage');
+      } else {
+        // Déconnexion réseau / restartRequired (515) / timeout : reconnexion normale
+        setStatus('DISCONNECTED');
+        io.emit('session:update', { name, status: data.status });
+        console.log(`[${name}] 🔌 Déconnecté (code ${code}) — reconnexion programmée`);
+        scheduleReconnect(name, `close code ${code}`);
+      }
+    }
   });
 
   // ── Réception messages → forward n8n ─────────────────────────────────────
-  client.on('message', async (msg) => {
-    if (msg.fromMe) return;
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (type !== 'notify') return;          // ignore les resync d'historique
+    for (const m of messages) {
+      if (!m.message) continue;
+      if (m.key.fromMe) continue;
+      const jid = m.key.remoteJid;
+      if (!jid || jid === 'status@broadcast') continue;
 
-    data.metrics.lastMessageAt = Date.now();
-    data.metrics.messageCount += 1;
-    recordAnalytics(name, msg.from);   // journal pour les statistiques (conversations, affluence)
-    if ((!msg.body || msg.body.trim() === '') && msg.type === 'chat') {
-      data.metrics.emptyBodyCount += 1;
-      console.warn(`[${name}] ⚠️  Message body vide (type=chat) — symptôme zombie possible (#${data.metrics.emptyBodyCount})`);
-    }
+      const body = extractBody(m);
+      const from = toLegacyId(jid);
+      const t    = msgType(m);
 
-    const webhookUrl = webhookConfig.sessions[name]
-      || process.env[`N8N_WEBHOOK_${name.toUpperCase()}`]
-      || webhookConfig.global
-      || N8N_WEBHOOK;
-    if (!webhookUrl) return;
+      data.metrics.lastMessageAt = Date.now();
+      data.metrics.messageCount += 1;
+      recordAnalytics(name, from);
 
-    try {
-      await axios.post(webhookUrl, {
-        event:   'message',
-        session: name,
-        payload: {
-          id:         msg.id._serialized,
-          from:       msg.from,
-          fromMe:     false,
-          body:       msg.body,
-          type:       msg.type,
-          timestamp:  msg.timestamp,
-          notifyName: msg._data?.notifyName || '',
-        },
-      }, { timeout: 8000 });
-      data.metrics.lastWebhookOkAt = Date.now();
-    } catch (err) {
-      data.metrics.webhookErrors += 1;
-      data.metrics.lastError = { msg: `webhook: ${err.message}`, at: Date.now() };
-      console.error(`[${name}] Webhook error:`, err.message);
+      if ((!body || body.trim() === '') && t === 'chat') {
+        data.metrics.emptyBodyCount += 1;
+      }
+
+      const webhookUrl = webhookConfig.sessions[name]
+        || process.env[`N8N_WEBHOOK_${name.toUpperCase()}`]
+        || webhookConfig.global
+        || N8N_WEBHOOK;
+      if (!webhookUrl) continue;
+
+      try {
+        await axios.post(webhookUrl, {
+          event:   'message',
+          session: name,
+          payload: {
+            id:         m.key.id,
+            from,
+            fromMe:     false,
+            body,
+            type:       t,
+            timestamp:  Number(m.messageTimestamp) || Math.floor(Date.now() / 1000),
+            notifyName: m.pushName || '',
+          },
+        }, { timeout: 8000 });
+        data.metrics.lastWebhookOkAt = Date.now();
+      } catch (err) {
+        data.metrics.webhookErrors += 1;
+        data.metrics.lastError = { msg: `webhook: ${err.message}`, at: Date.now() };
+        console.error(`[${name}] Webhook error:`, err.message);
+      }
     }
   });
 
-  client.initialize().catch(err => {
-    data.status = 'ERROR';
-    data.metrics.lastError = { msg: `init: ${err.message}`, at: Date.now() };
-    console.error(`[${name}] Init error:`, err.message);
-    // Plan B : si l'init échoue (souvent fetch version distante KO), on reprogramme une reconnexion
-    scheduleReconnect(name, `init error: ${err.message}`);
-  });
-
-  return client;
+  return sock;
 }
 
-// ── scheduleReconnect : détruit proprement le client mort puis en recrée un ───
-// Garde anti-concurrence (data.reconnecting) + backoff exponentiel plafonné.
+// ── Demande un pairing code (couplage par numéro, sans QR) ────────────────────
+async function maybeRequestPairing(data) {
+  const sock = data.client;
+  if (!sock || !data.phoneNumber) return;
+  if (sock.authState?.creds?.registered) return;
+  try {
+    const code = await sock.requestPairingCode(data.phoneNumber);
+    data.pairingCode = code;
+    data.qrBase64 = null;
+    console.log(`[${data.name}] 📲 Code de couplage prêt: ${code}`);
+    io.emit('session:update', { name: data.name, status: data.status, pairingCode: code });
+  } catch (e) {
+    console.error(`[${data.name}] requestPairingCode échoué:`, e.message);
+    data.metrics.lastError = { msg: `pairing: ${e.message}`, at: Date.now() };
+  }
+}
+
+// ── Détruit proprement un socket Baileys (sans déclencher de reconnexion) ─────
+function destroySocket(sock) {
+  if (!sock) return;
+  try { sock.ev.removeAllListeners('connection.update'); } catch {}
+  try { sock.ev.removeAllListeners('messages.upsert'); } catch {}
+  try { sock.ev.removeAllListeners('creds.update'); } catch {}
+  try { sock.end(undefined); } catch {}
+  try { sock.ws?.close(); } catch {}
+}
+
+// ── scheduleReconnect : ferme le socket mort puis en recrée un ────────────────
 function scheduleReconnect(name, reason) {
   const data = sessions.get(name);
-  if (!data || data.stopped) return;          // session supprimée/arrêtée → on n'insiste pas
-  if (data.reconnecting) return;              // déjà une reconnexion en cours
+  if (!data || data.stopped) return;
+  if (data.reconnecting) return;
   data.reconnecting = true;
 
   if (data.metrics.reconnectCount >= MAX_RECONNECT_TRIES) {
     data.metrics.lastError = { msg: `abandon reconnexion après ${MAX_RECONNECT_TRIES} essais (${reason})`, at: Date.now() };
-    console.error(`[${name}] 🛑 Reconnexion abandonnée après ${MAX_RECONNECT_TRIES} essais. Reset manuel requis.`);
+    console.error(`[${name}] 🛑 Reconnexion abandonnée après ${MAX_RECONNECT_TRIES} essais.`);
     data.reconnecting = false;
     return;
   }
 
   const tries = data.metrics.reconnectCount;
   const delay = Math.min(RECONNECT_BASE_MS * Math.pow(2, tries), RECONNECT_MAX_MS);
-  console.log(`[${name}] 🔄 Reconnexion programmée dans ${Math.round(delay/1000)}s (essai #${tries + 1}) — ${reason}`);
+  console.log(`[${name}] 🔄 Reconnexion dans ${Math.round(delay/1000)}s (essai #${tries + 1}) — ${reason}`);
 
   clearTimeout(data.reconnectTimer);
   data.reconnectTimer = setTimeout(async () => {
     data.metrics.reconnectCount += 1;
-    // 1) Détruire proprement l'ancien client zombie (best-effort, jamais bloquant)
+    destroySocket(data.client);
+    data.client = null;
     try {
-      if (data.client) await data.client.destroy();
-    } catch (e) {
-      console.warn(`[${name}] destroy() pendant reconnexion: ${e.message}`);
-    }
-    // 2) Recréer un client NEUF
-    try {
-      console.log(`[${name}] 🔁 Recréation d'un client neuf...`);
-      spawnClient(data);
-      data.reconnecting = false;  // sera reconfirmé sur 'ready'
+      console.log(`[${name}] 🔁 Recréation d'un socket neuf...`);
+      await spawnClient(data);
+      data.reconnecting = false;  // reconfirmé sur 'open'
     } catch (e) {
       data.reconnecting = false;
       data.metrics.lastError = { msg: `recréation: ${e.message}`, at: Date.now() };
@@ -389,50 +435,25 @@ function scheduleReconnect(name, reason) {
   }, delay);
 }
 
-// ── Watchdog : sonde getState() régulièrement pour détecter les zombies ───────
-// Le cas vicieux : le renderer Chromium meurt SANS émettre 'disconnected'.
-// getState() lève alors une exception ou renvoie ≠ CONNECTED → on force la recréation.
+// ── Watchdog : détecte les blocages d'initialisation ──────────────────────────
+// Baileys n'a pas de "zombie Chrome" (pas de navigateur). Mais un socket peut
+// rester coincé en INITIALIZING (sync qui ne finit jamais). Au-delà de
+// INIT_TIMEOUT_MS, on force une recréation propre.
 function startWatchdog(data) {
   const name = data.name;
   clearInterval(data.watchdogTimer);
   data.watchdogTimer = setInterval(async () => {
     if (data.stopped || data.reconnecting) return;
+    data.metrics.lastWatchdogAt = Date.now();
 
-    // ── Détection de blocage d'init ──
-    // Une session coincée en INITIALIZING/AUTHENTICATED (resync qui ne finit
-    // jamais, store cassé) ne déclenche aucun event → elle resterait bloquée
-    // indéfiniment. Au-delà de INIT_TIMEOUT_MS, on force une recréation propre.
     if (data.status === 'INITIALIZING' || data.status === 'AUTHENTICATED') {
       const stuckMs = Date.now() - data.metrics.statusChangedAt;
       if (stuckMs > INIT_TIMEOUT_MS) {
         data.metrics.zombieKills += 1;
         data.metrics.lastError = { msg: `init bloqué à ${data.status} depuis ${Math.round(stuckMs/1000)}s`, at: Date.now() };
-        console.warn(`[${name}] ⏳ Watchdog : bloqué à ${data.status} depuis ${Math.round(stuckMs/1000)}s → recréation forcée`);
-        scheduleReconnect(name, `init stuck ${data.status} ${Math.round(stuckMs/1000)}s`);
+        console.warn(`[${name}] ⏳ Watchdog : bloqué à ${data.status} → recréation forcée`);
+        scheduleReconnect(name, `init stuck ${Math.round(stuckMs/1000)}s`);
       }
-      return;
-    }
-
-    // On ne sonde getState() que sur les sessions censées être connectées
-    // (QR_READY = en attente de scan utilisateur = légitimement long, on ne touche pas)
-    if (data.status !== 'CONNECTED') return;
-    try {
-      const state = await Promise.race([
-        data.client.getState(),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('getState timeout')), 15_000)),
-      ]);
-      data.metrics.lastWatchdogAt = Date.now();
-      if (state !== 'CONNECTED') {
-        data.metrics.zombieKills += 1;
-        console.warn(`[${name}] 🧟 Watchdog : état=${state} ≠ CONNECTED → recréation`);
-        scheduleReconnect(name, `watchdog state=${state}`);
-      }
-    } catch (e) {
-      // getState() qui throw = renderer mort = zombie silencieux : le cas qu'on cible
-      data.metrics.zombieKills += 1;
-      data.metrics.lastError = { msg: `watchdog: ${e.message}`, at: Date.now() };
-      console.warn(`[${name}] 🧟 Watchdog : getState() a échoué (${e.message}) → zombie présumé, recréation`);
-      scheduleReconnect(name, `watchdog exception: ${e.message}`);
     }
   }, WATCHDOG_INTERVAL_MS);
 }
@@ -440,10 +461,10 @@ function startWatchdog(data) {
 async function stopSession(name) {
   const s = sessions.get(name);
   if (!s) return false;
-  s.stopped = true;                       // bloque toute reconnexion en vol
+  s.stopped = true;
   clearInterval(s.watchdogTimer);
   clearTimeout(s.reconnectTimer);
-  try { if (s.client) await s.client.destroy(); } catch {}
+  destroySocket(s.client);
   sessions.delete(name);
   io.emit('session:removed', { name });
   return true;
@@ -452,45 +473,50 @@ async function stopSession(name) {
 // Auto-démarrage des sessions persistées sur disque
 function autoStartSessions() {
   if (!fs.existsSync(SESSIONS_DIR)) return;
-  const dirs = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
+  fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
     .filter(d => d.isDirectory() && d.name.startsWith('session-'))
-    .map(d => d.name.replace(/^session-/, ''))
-    .filter(Boolean);
-
-  if (dirs.length > MAX_SESSIONS) {
-    console.warn(`[Auto-start] ${dirs.length} sessions sur disque, limite=${MAX_SESSIONS} — seules les ${MAX_SESSIONS} premières seront démarrées`);
-  }
-
-  dirs.slice(0, MAX_SESSIONS).forEach(name => {
-    console.log(`[Auto-start] Reprise session: ${name}`);
-    createSession(name);
-  });
+    .forEach(d => {
+      const name = d.name.replace(/^session-/, '');
+      if (name && sessions.size < MAX_SESSIONS) {
+        console.log(`[Auto-start] Reprise session: ${name}`);
+        createSession(name);
+      } else if (name) {
+        console.warn(`[Auto-start] Plafond ${MAX_SESSIONS} atteint — "${name}" non démarrée`);
+      }
+    });
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-const formatChatId = (id) => {
-  if (!id) return null;
-  if (id.includes('@')) return id;
-  return `${id.replace(/[^0-9]/g, '')}@c.us`;
-};
+// ── Helpers d'envoi ───────────────────────────────────────────────────────────
 
 const randomDelay = (min, max) =>
   new Promise(r => setTimeout(r, Math.floor(Math.random() * (max - min + 1)) + min));
 
-const getClient = (session) => {
+const getSession = (session) => {
   const s = sessions.get(session);
-  if (!s)                      throw new Error(`Session "${session}" introuvable`);
-  if (s.status !== 'CONNECTED') throw new Error(`Session "${session}" non connectée (${s.status})`);
-  return s.client;
+  if (!s)                         throw new Error(`Session "${session}" introuvable`);
+  if (s.status !== 'CONNECTED')   throw new Error(`Session "${session}" non connectée (${s.status})`);
+  return s;
 };
+
+// Récupère un média (fichier local /media/... si possible, sinon download) → Buffer
+async function fetchMediaBuffer(url) {
+  const mediaMatch = url.match(/\/media\/([^/?#]+)/);
+  if (mediaMatch) {
+    const filePath = path.join(MEDIA_DIR, mediaMatch[1]);
+    if (fs.existsSync(filePath)) {
+      console.log('[media] lecture locale:', filePath);
+      return fs.readFileSync(filePath);
+    }
+  }
+  console.log('[media] téléchargement URL:', url);
+  const resp = await axios.get(url, { responseType: 'arraybuffer', timeout: 20000 });
+  return Buffer.from(resp.data);
+}
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
-// Dashboard (page HTML)
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
-// Health check (sans auth)
 app.get('/health', (_req, res) => res.json({ ok: true, sessions: sessions.size }));
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
@@ -510,7 +536,7 @@ app.post('/api/sessions/start', auth, (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'name requis' });
   if (!sessions.has(name) && sessions.size >= MAX_SESSIONS) {
-    return res.status(429).json({ error: `Limite atteinte : ${MAX_SESSIONS} sessions maximum (configurable via MAX_SESSIONS)` });
+    return res.status(429).json({ error: `Plafond de ${MAX_SESSIONS} sessions atteint (anti-surcharge). Arrêtez-en une d'abord.` });
   }
   const s = createSession(name);
   res.json({ success: true, name: s.name, status: s.status });
@@ -521,13 +547,9 @@ app.delete('/api/sessions/:name/stop', auth, async (req, res) => {
   res.json({ success: ok });
 });
 
-// DELETE /api/sessions/:name/reset — arrête la session ET supprime les fichiers d'auth
-// Utilisé par le dashboard Camille lors d'une déconnexion volontaire (changer de numéro)
 app.delete('/api/sessions/:name/reset', auth, async (req, res) => {
   const name = req.params.name;
   await stopSession(name);
-
-  // Supprimer les fichiers d'auth LocalAuth
   const sessionDir = path.join(SESSIONS_DIR, `session-${name}`);
   try {
     if (fs.existsSync(sessionDir)) {
@@ -537,7 +559,6 @@ app.delete('/api/sessions/:name/reset', auth, async (req, res) => {
   } catch (e) {
     console.warn(`[${name}] ⚠️  Impossible de supprimer auth: ${e.message}`);
   }
-
   res.json({ success: true });
 });
 
@@ -548,7 +569,6 @@ app.get('/api/sessions/:name/status', auth, (req, res) => {
 });
 
 // POST /api/sessions/:name/pairing-code  { phone }
-// Génère un code à 8 chars à saisir dans WhatsApp → Appareils liés → Lier avec numéro
 app.post('/api/sessions/:name/pairing-code', auth, async (req, res) => {
   const { name } = req.params;
   const { phone } = req.body;
@@ -561,7 +581,7 @@ app.post('/api/sessions/:name/pairing-code', auth, async (req, res) => {
   if (normalizedPhone.length < 7) return res.status(400).json({ error: 'Numéro invalide' });
   data.phoneNumber = normalizedPhone;
 
-  if (data.status === 'QR_READY' && data.client) {
+  if (data.client && !data.client.authState?.creds?.registered) {
     try {
       const code = await data.client.requestPairingCode(normalizedPhone);
       data.pairingCode = code;
@@ -575,19 +595,17 @@ app.post('/api/sessions/:name/pairing-code', auth, async (req, res) => {
     }
   }
 
-  // Session pas encore en QR_READY : le numéro est enregistré, le code sera généré au prochain QR
-  res.json({ success: true, message: 'Numéro enregistré — le code sera généré au prochain cycle QR' });
+  res.json({ success: true, message: 'Numéro enregistré — le code sera généré au prochain cycle' });
 });
 
 app.get('/api/sessions/:name/qr', auth, (req, res) => {
   const s = sessions.get(req.params.name);
-  if (!s)                return res.status(404).json({ error: 'Session introuvable' });
+  if (!s)                       return res.status(404).json({ error: 'Session introuvable' });
   if (s.status === 'CONNECTED') return res.json({ status: s.status, message: 'Déjà connecté' });
-  if (!s.qrBase64)       return res.json({ status: s.status, message: 'QR pas encore disponible, patientez…' });
+  if (!s.qrBase64)              return res.json({ status: s.status, message: 'QR pas encore disponible, patientez…' });
   res.json({ status: s.status, qrCodeBase64: s.qrBase64 });
 });
 
-// Alias court : GET /api/qr?session=xxx  (compatible intégrations simples)
 app.get('/api/qr', auth, (req, res) => {
   const name = req.query.session || 'default';
   const s = sessions.get(name);
@@ -597,7 +615,7 @@ app.get('/api/qr', auth, (req, res) => {
   res.json({ status: s.status, qrCodeBase64: s.qrBase64 });
 });
 
-// ── Envoi de messages (compatibles WAHA) ──────────────────────────────────────
+// ── Envoi de messages (compatibles WAHA / v1) ─────────────────────────────────
 
 // POST /api/sendText   { chatId, text, session }
 app.post('/api/sendText', auth, async (req, res) => {
@@ -605,14 +623,13 @@ app.post('/api/sendText', auth, async (req, res) => {
   if (!chatId || !text) return res.status(400).json({ error: 'chatId et text requis' });
 
   try {
-    const cl  = getClient(session);
-    const id  = formatChatId(chatId);
-    const chat = await cl.getChatById(id);
+    const s   = getSession(session);
+    const jid = toJid(chatId);
 
-    await chat.sendStateTyping();
+    await s.client.sendPresenceUpdate('composing', jid);
     await randomDelay(1200, 2500);
-    await cl.sendMessage(id, text);
-    await chat.clearState();
+    await s.client.sendMessage(jid, { text });
+    await s.client.sendPresenceUpdate('paused', jid);
 
     res.json({ success: true });
   } catch (err) {
@@ -621,30 +638,6 @@ app.post('/api/sendText', auth, async (req, res) => {
   }
 });
 
-// ── Helper : résout une URL en MessageMedia (local si possible) ───────────────
-// Détecte automatiquement les fichiers locaux via le pattern /media/filename
-// sans dépendance à CORE_PUBLIC_URL
-function resolveMedia(url) {
-  const mediaMatch = url.match(/\/media\/([^/?#]+)/);
-  if (mediaMatch) {
-    const filename = mediaMatch[1];
-    const filePath = path.join(MEDIA_DIR, filename);
-    if (fs.existsSync(filePath)) {
-      console.log('[media] lecture locale:', filePath);
-      return MessageMedia.fromFilePath(filePath);
-    }
-  }
-  console.log('[media] téléchargement URL:', url);
-  return MessageMedia.fromUrl(url, { unsafeMime: true });
-}
-
-// ── Helper : normalise @lid → @c.us pour les envois media ────────────────────
-// whatsapp-web.js supporte @lid pour le texte mais pas pour les médias
-function normalizeMediaId(id) {
-  if (!id) return id;
-  return id.replace(/@lid$/, '@c.us');
-}
-
 // POST /api/sendVoice  { chatId, session, file: { url } }
 app.post('/api/sendVoice', auth, async (req, res) => {
   let { chatId, session = 'default', file } = req.body;
@@ -652,79 +645,25 @@ app.post('/api/sendVoice', auth, async (req, res) => {
   if (!file?.url) return res.json({ success: true, skipped: true, reason: 'Aucune URL audio configurée' });
 
   try {
-    const cl    = getClient(session);
-    const rawId = formatChatId(chatId);
-    console.log('[sendVoice] chatId:', rawId, 'url:', file.url);
+    const s   = getSession(session);
+    const jid = toJid(chatId);
+    console.log('[sendVoice] jid:', jid, 'url:', file.url);
 
-    // Pour @lid : récupérer le vrai numéro de téléphone via le contact
-    let sendId = rawId;
-    if (rawId.endsWith('@lid')) {
-      try {
-        const contact = await cl.getContactById(rawId);
-        // Log complet pour diagnostic
-        console.log('[sendVoice] contact keys:', Object.keys(contact));
-        console.log('[sendVoice] contact.id:', JSON.stringify(contact.id));
-        console.log('[sendVoice] contact.number:', contact.number);
-        console.log('[sendVoice] contact.pushname:', contact.pushname);
-
-        // Essayer toutes les sources possibles du vrai numéro
-        const cus = contact.id && contact.id._serialized;
-        if (cus && cus.endsWith('@c.us')) {
-          sendId = cus;
-          console.log('[sendVoice] sendId via contact.id._serialized:', sendId);
-        } else if (contact.number && contact.number.length > 5) {
-          sendId = `${contact.number}@c.us`;
-          console.log('[sendVoice] sendId via contact.number:', sendId);
-        } else {
-          // Dernière tentative : récupérer depuis le chat
-          const chat = await cl.getChatById(rawId);
-          const chatContact = await chat.getContact();
-          console.log('[sendVoice] chatContact.id:', JSON.stringify(chatContact.id));
-          console.log('[sendVoice] chatContact.number:', chatContact.number);
-          if (chatContact.number && chatContact.number.length > 5) {
-            sendId = `${chatContact.number}@c.us`;
-            console.log('[sendVoice] sendId via chatContact.number:', sendId);
-          }
-        }
-      } catch (lidErr) {
-        const lidMsg = (lidErr && typeof lidErr === 'object') ? lidErr.message : String(lidErr);
-        console.warn('[sendVoice] Résolution LID échouée:', lidMsg);
-      }
+    const buffer = await fetchMediaBuffer(file.url);
+    if (!buffer || buffer.length < 500) {
+      throw new Error(`Fichier audio invalide ou introuvable (${buffer ? buffer.length : 0} bytes)`);
     }
 
-    const chat = await cl.getChatById(rawId);
-    await chat.sendStateRecording();
+    await s.client.sendPresenceUpdate('recording', jid);
     await randomDelay(1500, 3000);
+    // ptt: true → note vocale (et non pièce jointe audio)
+    await s.client.sendMessage(jid, { audio: buffer, ptt: true, mimetype: 'audio/ogg; codecs=opus' });
+    await s.client.sendPresenceUpdate('paused', jid);
 
-    const mediaPtt = await resolveMedia(file.url);
-    mediaPtt.mimetype = 'audio/ogg; codecs=opus';
-    const dataLen = mediaPtt.data ? mediaPtt.data.length : 0;
-    console.log('[sendVoice] envoi PTT vers:', sendId, 'data length:', dataLen);
-    if (dataLen < 500) {
-      throw new Error(`Fichier audio invalide ou introuvable (${dataLen} bytes base64) — vérifiez que le fichier est bien uploadé`);
-    }
-
-    try {
-      await cl.sendMessage(sendId, mediaPtt, { sendAudioAsVoice: true });
-      console.log('[sendVoice] PTT envoyé ✓');
-    } catch (pttErr) {
-      const pttMsg = (pttErr && typeof pttErr === 'object') ? pttErr.message : String(pttErr);
-      console.warn('[sendVoice] PTT échoué:', pttMsg, '→ audio normal');
-      const media = await resolveMedia(file.url);
-      try {
-        await cl.sendMessage(sendId, media);
-        console.log('[sendVoice] audio normal envoyé ✓');
-      } catch (audioErr) {
-        const audioMsg = (audioErr && typeof audioErr === 'object') ? audioErr.message : String(audioErr);
-        console.error('[sendVoice] audio normal échoué:', audioMsg);
-        throw new Error(audioMsg);
-      }
-    }
-
-    await chat.clearState();
+    console.log('[sendVoice] PTT envoyé ✓');
     res.json({ success: true });
   } catch (err) {
-    const msg = (err && typeof err === 'object') ? err.message : String(err);
+    const msg = err?.message || String(err);
     const sd = sessions.get(session);
     if (sd?.metrics) { sd.metrics.mediaErrors += 1; sd.metrics.lastError = { msg: `sendVoice: ${msg}`, at: Date.now() }; }
     console.error('[sendVoice] ERREUR FINALE:', msg);
@@ -739,44 +678,26 @@ app.post('/api/sendVideo', auth, async (req, res) => {
   if (!file?.url) return res.json({ success: true, skipped: true, reason: 'Aucune URL vidéo configurée' });
 
   try {
-    const cl    = getClient(session);
-    const rawId = formatChatId(chatId);
-    console.log('[sendVideo] rawId:', rawId, 'url:', file.url);
+    const s   = getSession(session);
+    const jid = toJid(chatId);
+    console.log('[sendVideo] jid:', jid, 'url:', file.url);
 
-    // Résolution @lid → @c.us (même logique que sendVoice)
-    let sendId = rawId;
-    if (rawId.endsWith('@lid')) {
-      try {
-        const contact = await cl.getContactById(rawId);
-        const cus = contact.id && contact.id._serialized;
-        if (cus && cus.endsWith('@c.us')) {
-          sendId = cus;
-        } else if (contact.number && contact.number.length > 5) {
-          sendId = `${contact.number}@c.us`;
-        } else {
-          const chat = await cl.getChatById(rawId);
-          const chatContact = await chat.getContact();
-          if (chatContact.number && chatContact.number.length > 5) {
-            sendId = `${chatContact.number}@c.us`;
-          }
-        }
-        console.log('[sendVideo] sendId résolu:', sendId);
-      } catch (lidErr) {
-        console.warn('[sendVideo] Résolution LID échouée:', lidErr.message);
-      }
+    const buffer = await fetchMediaBuffer(file.url);
+    if (!buffer || buffer.length < 500) {
+      throw new Error(`Fichier vidéo invalide ou introuvable (${buffer ? buffer.length : 0} bytes)`);
     }
 
-    const media = await resolveMedia(file.url);
     await randomDelay(500, 1500);
-    await cl.sendMessage(sendId, media, { caption });
+    await s.client.sendMessage(jid, { video: buffer, caption: caption || undefined });
     console.log('[sendVideo] envoyé ✓');
 
     res.json({ success: true });
   } catch (err) {
+    const msg = err?.message || String(err);
     const sd = sessions.get(session);
-    if (sd?.metrics) { sd.metrics.mediaErrors += 1; sd.metrics.lastError = { msg: `sendVideo: ${err.message}`, at: Date.now() }; }
-    console.error('[sendVideo] ERREUR FINALE:', err.message);
-    res.status(500).json({ success: false, error: err.message });
+    if (sd?.metrics) { sd.metrics.mediaErrors += 1; sd.metrics.lastError = { msg: `sendVideo: ${msg}`, at: Date.now() }; }
+    console.error('[sendVideo] ERREUR FINALE:', msg);
+    res.status(500).json({ success: false, error: msg });
   }
 });
 
@@ -787,13 +708,18 @@ app.post('/api/sendFile', auth, async (req, res) => {
   if (!file?.url) return res.json({ success: true, skipped: true, reason: 'Aucune URL fichier configurée' });
 
   try {
-    const cl    = getClient(session);
-    const id    = formatChatId(chatId);
-    const media = await MessageMedia.fromUrl(file.url, { unsafeMime: true });
-    if (file.name) media.filename = file.name;
+    const s   = getSession(session);
+    const jid = toJid(chatId);
 
+    const buffer = await fetchMediaBuffer(file.url);
+    const fileName = file.name || 'document';
     await randomDelay(500, 1500);
-    await cl.sendMessage(id, media, { caption });
+    await s.client.sendMessage(jid, {
+      document: buffer,
+      fileName,
+      caption: caption || undefined,
+      mimetype: file.mimeType || 'application/octet-stream',
+    });
 
     res.json({ success: true });
   } catch (err) {
@@ -806,9 +732,8 @@ app.post('/api/sendFile', auth, async (req, res) => {
 app.post('/api/startTyping', auth, async (req, res) => {
   let { chatId, session = 'default' } = req.body;
   try {
-    const cl   = getClient(session);
-    const chat = await cl.getChatById(formatChatId(chatId));
-    await chat.sendStateTyping();
+    const s = getSession(session);
+    await s.client.sendPresenceUpdate('composing', toJid(chatId));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -819,9 +744,8 @@ app.post('/api/startTyping', auth, async (req, res) => {
 app.post('/api/stopTyping', auth, async (req, res) => {
   let { chatId, session = 'default' } = req.body;
   try {
-    const cl   = getClient(session);
-    const chat = await cl.getChatById(formatChatId(chatId));
-    await chat.clearState();
+    const s = getSession(session);
+    await s.client.sendPresenceUpdate('paused', toJid(chatId));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -833,54 +757,49 @@ app.post('/api/stopTyping', auth, async (req, res) => {
 app.get('/api/server/info', auth, (_req, res) => {
   res.json({
     version:  VERSION,
+    engine:   'baileys',
     uptime:   Math.floor((Date.now() - START_TIME) / 1000),
     sessions: sessions.size,
+    maxSessions: MAX_SESSIONS,
     connected: [...sessions.values()].filter(s => s.status === 'CONNECTED').length,
   });
 });
 
 // ── Monitoring détaillé ─────────────────────────────────────────────────────────
-// GET /api/health/detailed — état santé par session + ressources process
-// Utilisé par la section "Monitoring" du dashboard.
 
-const ZOMBIE_SILENCE_MS = 30 * 60 * 1000; // 30 min sans message = suspect si trafic habituel
+const ZOMBIE_SILENCE_MS = 30 * 60 * 1000;
 
 function sessionHealth(s) {
   const m = s.metrics || {};
   const now = Date.now();
   const issues = [];
-  let health = 'ok'; // ok | warn | critical
+  let health = 'ok';
 
   if (s.status !== 'CONNECTED') {
     health = s.status === 'DISCONNECTED' || s.status === 'AUTH_FAILURE' || s.status === 'ERROR' ? 'critical' : 'warn';
     issues.push(`Statut: ${s.status}`);
   }
 
-  // Zombie suspect : connecté mais bodies vides récents
   if (s.status === 'CONNECTED' && m.emptyBodyCount > 0) {
-    health = 'critical';
-    issues.push(`${m.emptyBodyCount} message(s) à body vide — session zombie probable`);
+    if (health === 'ok') health = 'warn';
+    issues.push(`${m.emptyBodyCount} message(s) à body vide`);
   }
 
-  // Reconnexions répétées
   if (m.reconnectCount >= 3) {
     if (health === 'ok') health = 'warn';
     issues.push(`${m.reconnectCount} reconnexions`);
   }
 
-  // Erreurs webhook
   if (m.webhookErrors > 0) {
     if (health === 'ok') health = 'warn';
     issues.push(`${m.webhookErrors} erreur(s) webhook n8n`);
   }
 
-  // Zombies récupérés par le watchdog
   if (m.zombieKills > 0) {
     if (health === 'ok') health = 'warn';
-    issues.push(`${m.zombieKills} zombie(s) récupéré(s) par le watchdog`);
+    issues.push(`${m.zombieKills} recréation(s) forcée(s)`);
   }
 
-  // Silence prolongé (info seulement)
   const silenceMs = m.lastMessageAt ? now - m.lastMessageAt : null;
   if (s.status === 'CONNECTED' && silenceMs !== null && silenceMs > ZOMBIE_SILENCE_MS && m.messageCount > 0) {
     if (health === 'ok') health = 'warn';
@@ -933,14 +852,7 @@ app.get('/api/health/detailed', auth, (_req, res) => {
   });
 });
 
-// ── Analytics : statistiques de conversations & affluence ─────────────────────
-// GET /api/analytics?from=ms&to=ms&session=xxx&granularity=minute|hour|day|weekday
-//   - conversations = contacts uniques (numéros distincts) sur la période
-//   - messages      = nombre total de messages reçus
-//   - series        = répartition temporelle selon la granularité
-//   - byHour        = affluence par heure du jour (0-23)
-//   - byWeekday     = affluence par jour de semaine (0=Dim … 6=Sam)
-//   - sessionsList  = liste des sessions présentes (pour le filtre)
+// ── Analytics ─────────────────────────────────────────────────────────────────
 
 function bucketKey(ts, granularity) {
   const d = new Date(ts);
@@ -956,7 +868,7 @@ function bucketKey(ts, granularity) {
 app.get('/api/analytics', auth, (req, res) => {
   const now = Date.now();
   const to   = req.query.to   ? Number(req.query.to)   : now;
-  const from = req.query.from ? Number(req.query.from) : now - 7 * 86400000;  // 7j par défaut
+  const from = req.query.from ? Number(req.query.from) : now - 7 * 86400000;
   const session = req.query.session && req.query.session !== 'all' ? req.query.session : null;
   const granularity = ['minute', 'hour', 'day'].includes(req.query.granularity) ? req.query.granularity : 'day';
 
@@ -964,8 +876,7 @@ app.get('/api/analytics', auth, (req, res) => {
     e.t >= from && e.t <= to && (!session || e.s === session)
   );
 
-  // Répartition temporelle : messages + conversations (contacts uniques par bucket)
-  const buckets = new Map();   // key → { messages, contacts:Set }
+  const buckets = new Map();
   const byHour    = Array(24).fill(0);
   const byWeekday = Array(7).fill(0);
   const uniqueContacts = new Set();
@@ -986,7 +897,6 @@ app.get('/api/analytics', auth, (req, res) => {
     .sort((a, b) => a[0] < b[0] ? -1 : 1)
     .map(([bucket, v]) => ({ bucket, messages: v.messages, conversations: v.contacts.size }));
 
-  // Heure / jour de pointe
   const peakHour = byHour.indexOf(Math.max(...byHour));
   const WD = ['Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'];
   const peakWeekday = byWeekday.indexOf(Math.max(...byWeekday));
@@ -1027,14 +937,11 @@ app.post('/api/config/webhooks', auth, (req, res) => {
 });
 
 // ── Media Storage ─────────────────────────────────────────────────────────────
-// POST /api/media/upload  { name, data (base64), mimeType }
-// DELETE /api/media/:filename
 
 app.post('/api/media/upload', auth, (req, res) => {
   const { name, data, mimeType } = req.body;
   if (!name || !data) return res.status(400).json({ error: 'name et data (base64) requis' });
 
-  // Assainir le nom de fichier
   const safe = name.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.{2,}/g, '_');
   if (!safe) return res.status(400).json({ error: 'nom invalide' });
 
@@ -1077,8 +984,17 @@ io.on('connection', (socket) => {
 // ── Démarrage ─────────────────────────────────────────────────────────────────
 
 server.listen(PORT, () => {
-  console.log(`\n🔥 Camille Core → http://localhost:${PORT}`);
+  console.log(`\n🔥 Camille Core v${VERSION} (Baileys) → http://localhost:${PORT}`);
   console.log(`🔑 API Key      → ${API_KEY}`);
-  console.log(`📡 Webhook n8n  → ${N8N_WEBHOOK || '(non configuré)'}\n`);
+  console.log(`📡 Webhook n8n  → ${N8N_WEBHOOK || '(non configuré)'}`);
+  console.log(`🧩 Max sessions → ${MAX_SESSIONS}\n`);
   autoStartSessions();
+});
+
+// Sécurité : ne jamais laisser une exception non gérée tuer le process
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason?.message || reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err?.message || err);
 });

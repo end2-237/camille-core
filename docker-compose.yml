@@ -4,14 +4,14 @@ services:
   camille-core:
     build: .
     # NE PAS mettre container_name ni ports — Coolify les gère
-    init: true          # tini comme PID 1 via Docker (alternative si tini absent du layer)
+    init: true           # PID 1 propre (récolte les éventuels process orphelins)
     restart: unless-stopped
-    cpus: 1.5            # max 1,5 cœur — Chrome ne peut plus saturer le VPS 2 cœurs
-    mem_limit: 1536m    # 1.5 Go max — si Chrome fuit, le conteneur seul redémarre
-    memswap_limit: 1536m # pas de swap pour ce conteneur (le swap hôte reste pour les autres)
-    shm_size: '512mb'   # /dev/shm partagé entre Chrome et ses renderers (256mb était trop juste)
+    # ── Garde-fous anti-surcharge (Baileys est léger, mais on protège le VPS) ──
+    cpus: 1.0            # max 1 cœur — ne peut plus jamais saturer le serveur
+    mem_limit: 512m      # 512 Mo suffisent largement (Baileys ~80 Mo)
+    memswap_limit: 512m  # pas de swap pour ce conteneur
     volumes:
-      # Sessions WhatsApp (LocalAuth) — survit aux redémarrages et rebuilds
+      # Sessions WhatsApp (auth Baileys) — survit aux redémarrages et rebuilds
       - sessions-data:/app/sessions
       # Media uploadés — survit aux redémarrages
       - media-data:/app/public/media
@@ -20,10 +20,9 @@ services:
       - API_KEY=${API_KEY:-camille-core-secret}
       - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL:-}
       - N8N_WEBHOOK_DEFAULT=${N8N_WEBHOOK_DEFAULT:-}
-      - PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
       - SESSIONS_DIR=/app/sessions
       - CORE_PUBLIC_URL=${CORE_PUBLIC_URL:-}
+      - MAX_SESSIONS=${MAX_SESSIONS:-2}
 
 volumes:
   sessions-data:

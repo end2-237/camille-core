@@ -1,13 +1,14 @@
-# ── Camille Core Dockerfile ──────────────────────────────────────────────────
-# ghcr.io/puppeteer/puppeteer:22 = Node 20 + Google Chrome stable pré-installé
-# Les zombies Chrome sont récoltés par l'init de Docker (init: true dans docker-compose)
+# ── Camille Core Dockerfile (v2 — Baileys, sans Chrome) ──────────────────────
+# Plus de Puppeteer/Chrome : image ~250 Mo au lieu de 1,5 Go, CPU quasi nul.
+# node:20-slim + outils de build pour les deps natives (crypto signal).
 
-FROM ghcr.io/puppeteer/puppeteer:22
+FROM node:20-slim
 
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
+# Outils nécessaires à node-gyp (libsignal) + certificats HTTPS
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential python3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-USER root
 WORKDIR /app
 
 COPY package*.json ./
