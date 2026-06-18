@@ -298,19 +298,17 @@ async function spawnClient(data) {
       const code = lastDisconnect?.error?.output?.statusCode
                  || lastDisconnect?.error?.output?.payload?.statusCode;
       data.metrics.lastDisconnect = { reason: String(code || 'unknown'), at: Date.now() };
+      // Libérer la garde AVANT de reprogrammer (sinon scheduleReconnect refuse)
+      data.reconnecting = false;
 
       if (code === DisconnectReason.loggedOut) {
-        // Déconnexion DÉFINITIVE côté WhatsApp (appareil délié) → auth invalide.
-        // On purge les creds pour forcer un nouveau QR / pairing.
         setStatus('AUTH_FAILURE');
         data.metrics.lastError = { msg: 'loggedOut — appareil délié, re-couplage requis', at: Date.now() };
         io.emit('session:update', { name, status: data.status });
         console.warn(`[${name}] ❌ Déconnecté (loggedOut) — re-couplage requis`);
         try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
-        // On relance un client neuf qui repartira sur un QR/pairing vierge
         scheduleReconnect(name, 'loggedOut → nouveau couplage');
       } else {
-        // Déconnexion réseau / restartRequired (515) / timeout : reconnexion normale
         setStatus('DISCONNECTED');
         io.emit('session:update', { name, status: data.status });
         console.log(`[${name}] 🔌 Déconnecté (code ${code}) — reconnexion programmée`);
@@ -443,16 +441,28 @@ function startWatchdog(data) {
   const name = data.name;
   clearInterval(data.watchdogTimer);
   data.watchdogTimer = setInterval(async () => {
-    if (data.stopped || data.reconnecting) return;
+    if (data.stopped) return;
     data.metrics.lastWatchdogAt = Date.now();
 
+    // Détection blocage init (INITIALIZING/AUTHENTICATED > 3 min)
     if (data.status === 'INITIALIZING' || data.status === 'AUTHENTICATED') {
       const stuckMs = Date.now() - data.metrics.statusChangedAt;
       if (stuckMs > INIT_TIMEOUT_MS) {
         data.metrics.zombieKills += 1;
+        data.reconnecting = false; // force-libérer la garde
         data.metrics.lastError = { msg: `init bloqué à ${data.status} depuis ${Math.round(stuckMs/1000)}s`, at: Date.now() };
         console.warn(`[${name}] ⏳ Watchdog : bloqué à ${data.status} → recréation forcée`);
         scheduleReconnect(name, `init stuck ${Math.round(stuckMs/1000)}s`);
+      }
+    }
+
+    // Détection DISCONNECTED sans reconnexion en cours (garde bloquée)
+    if (data.status === 'DISCONNECTED' && !data.reconnecting) {
+      const stuckMs = Date.now() - data.metrics.statusChangedAt;
+      if (stuckMs > 60_000) { // déconnecté > 1 min sans reconnexion
+        data.metrics.zombieKills += 1;
+        console.warn(`[${name}] ⏳ Watchdog : DISCONNECTED depuis ${Math.round(stuckMs/1000)}s sans reconnexion → relance`);
+        scheduleReconnect(name, `watchdog disconnected stuck ${Math.round(stuckMs/1000)}s`);
       }
     }
   }, WATCHDOG_INTERVAL_MS);
