@@ -318,9 +318,20 @@ async function spawnClient(data) {
   });
 
   // ── Réception messages → forward n8n ─────────────────────────────────────
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;          // ignore les resync d'historique
+  // Debug : log fichier puisque docker logs est indisponible sur ce serveur
+  const debugLog = (msg) => {
+    const line = `[${new Date().toISOString()}] ${msg}\n`;
+    fs.appendFile(path.join(SESSIONS_DIR, 'debug.log'), line, () => {});
+  };
+
+  sock.ev.on('messages.upsert', async (upsert) => {
+    debugLog(`messages.upsert reçu: type=${upsert.type} count=${upsert.messages?.length || 0}`);
+    const messages = upsert.messages || [];
+    // Accepter 'notify' (nouveaux messages) ET 'append' (certaines versions Baileys)
+    if (upsert.type === 'append' && messages.every(m => !m.message)) return;
+
     for (const m of messages) {
+      debugLog(`  msg: fromMe=${m.key?.fromMe} jid=${m.key?.remoteJid} hasMessage=${!!m.message} type=${msgType(m)}`);
       if (!m.message) continue;
       if (m.key.fromMe) continue;
       const jid = m.key.remoteJid;
@@ -333,6 +344,7 @@ async function spawnClient(data) {
       data.metrics.lastMessageAt = Date.now();
       data.metrics.messageCount += 1;
       recordAnalytics(name, from);
+      debugLog(`  → message accepté: from=${from} body="${body?.substring(0,50)}" type=${t}`);
 
       if ((!body || body.trim() === '') && t === 'chat') {
         data.metrics.emptyBodyCount += 1;
@@ -342,7 +354,7 @@ async function spawnClient(data) {
         || process.env[`N8N_WEBHOOK_${name.toUpperCase()}`]
         || webhookConfig.global
         || N8N_WEBHOOK;
-      if (!webhookUrl) continue;
+      if (!webhookUrl) { debugLog(`  ✗ pas de webhook configuré`); continue; }
 
       try {
         await axios.post(webhookUrl, {
@@ -359,10 +371,11 @@ async function spawnClient(data) {
           },
         }, { timeout: 8000 });
         data.metrics.lastWebhookOkAt = Date.now();
+        debugLog(`  ✓ webhook OK`);
       } catch (err) {
         data.metrics.webhookErrors += 1;
         data.metrics.lastError = { msg: `webhook: ${err.message}`, at: Date.now() };
-        console.error(`[${name}] Webhook error:`, err.message);
+        debugLog(`  ✗ webhook ERROR: ${err.message}`);
       }
     }
   });
