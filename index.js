@@ -356,8 +356,7 @@ async function spawnClient(data) {
         || N8N_WEBHOOK;
       if (!webhookUrl) { debugLog(`  ✗ pas de webhook configuré`); continue; }
 
-      try {
-        await axios.post(webhookUrl, {
+      axios.post(webhookUrl, {
           event:   'message',
           session: name,
           payload: {
@@ -369,14 +368,16 @@ async function spawnClient(data) {
             timestamp:  Number(m.messageTimestamp) || Math.floor(Date.now() / 1000),
             notifyName: m.pushName || '',
           },
-        }, { timeout: 8000 });
-        data.metrics.lastWebhookOkAt = Date.now();
-        debugLog(`  ✓ webhook OK`);
-      } catch (err) {
-        data.metrics.webhookErrors += 1;
-        data.metrics.lastError = { msg: `webhook: ${err.message}`, at: Date.now() };
-        debugLog(`  ✗ webhook ERROR: ${err.message}`);
-      }
+        }, { timeout: 30000 })
+        .then(() => {
+          data.metrics.lastWebhookOkAt = Date.now();
+          debugLog(`  ✓ webhook OK`);
+        })
+        .catch((err) => {
+          data.metrics.webhookErrors += 1;
+          data.metrics.lastError = { msg: `webhook: ${err.message}`, at: Date.now() };
+          debugLog(`  ✗ webhook ERROR: ${err.message}`);
+        });
     }
   });
 
