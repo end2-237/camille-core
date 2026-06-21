@@ -281,6 +281,17 @@ async function spawnClient(data) {
     }
 
     if (connection === 'open') {
+      if (!sock.authState.creds.registered) {
+        console.warn(`[${name}] ⚠️ registered=false détecté — suppression session et re-pairing`);
+        debugLog(`registered=false après connexion — re-pairing forcé`);
+        try { sock.end(new Error('registered=false')); } catch {}
+        try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
+        setStatus('AUTH_FAILURE');
+        data.metrics.lastError = { msg: 'registered=false — re-pairing requis', at: Date.now() };
+        io.emit('session:update', { name, status: data.status });
+        scheduleReconnect(name, 'registered=false → nouveau couplage');
+        return;
+      }
       setStatus('CONNECTED');
       data.qrBase64 = null;
       data.pairingCode = null;
