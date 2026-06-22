@@ -282,15 +282,17 @@ async function spawnClient(data) {
 
     if (connection === 'open') {
       if (!sock.authState.creds.registered) {
-        console.warn(`[${name}] ⚠️ registered=false détecté — suppression session et re-pairing`);
-        debugLog(`registered=false après connexion — re-pairing forcé`);
-        try { sock.end(new Error('registered=false')); } catch {}
-        try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
-        setStatus('AUTH_FAILURE');
-        data.metrics.lastError = { msg: 'registered=false — re-pairing requis', at: Date.now() };
-        io.emit('session:update', { name, status: data.status });
-        scheduleReconnect(name, 'registered=false → nouveau couplage');
-        return;
+        console.log(`[${name}] ⏳ registered=false — attente 10s pour finalisation...`);
+        debugLog(`registered=false après connexion — attente 10s`);
+        await new Promise(r => setTimeout(r, 10000));
+        await saveCreds();
+        if (!sock.authState.creds.registered) {
+          console.warn(`[${name}] ⚠️ registered toujours false après 10s — on garde la session et on continue`);
+          debugLog(`registered toujours false après 10s — on continue quand même`);
+        } else {
+          console.log(`[${name}] ✅ registered passé à true après attente`);
+          debugLog(`registered passé à true après attente`);
+        }
       }
       setStatus('CONNECTED');
       data.qrBase64 = null;
