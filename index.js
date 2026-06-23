@@ -201,6 +201,7 @@ function createSession(name) {
     name, status: 'INITIALIZING', qrBase64: null, client: null, phone: null,
     phoneNumber:  null,   // numéro pour le pairing code (sans +)
     pairingCode:  null,   // code 8 chars généré par requestPairingCode()
+    pairingRequested: false, // garde : 1 seul code par socket (régénérer invalide le précédent)
     saveCreds:    null,   // fonction de persistance des creds Baileys
     // ── État interne de stabilité ──
     reconnecting:    false,
@@ -240,6 +241,10 @@ function createSession(name) {
 async function spawnClient(data) {
   const name = data.name;
   const authDir = path.join(SESSIONS_DIR, `session-${name}`);
+
+  // Socket NEUF → tout pairing code précédent est mort. On réautorise une
+  // demande (et une seule) pour ce nouveau socket.
+  data.pairingRequested = false;
 
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
   data.saveCreds = saveCreds;
@@ -299,7 +304,10 @@ async function spawnClient(data) {
       // encore appairé, on n'affiche pas le QR (le code sera demandé à part).
       if (data.phoneNumber && !sock.authState.creds.registered) {
         data.qrBase64 = null;
-        maybeRequestPairing(data);
+        // IMPORTANT : ne régénère PAS le code à chaque rotation de QR — un
+        // nouveau requestPairingCode invalide le précédent, ce qui fait
+        // échouer la saisie côté client. On ne demande qu'une fois par socket.
+        if (!data.pairingRequested) maybeRequestPairing(data);
       } else {
         try {
           data.qrBase64 = await QRCode.toDataURL(qr);
@@ -424,6 +432,8 @@ async function maybeRequestPairing(data) {
   const sock = data.client;
   if (!sock || !data.phoneNumber) return;
   if (sock.authState?.creds?.registered) return;
+  if (data.pairingRequested) return;   // déjà demandé pour ce socket
+  data.pairingRequested = true;
   try {
     const code = await sock.requestPairingCode(data.phoneNumber);
     data.pairingCode = code;
@@ -642,7 +652,11 @@ app.post('/api/sessions/:name/pairing-code', auth, async (req, res) => {
 
   if (data.client && !data.client.authState?.creds?.registered) {
     try {
+      // Demande manuelle explicite : on génère un code frais et on pose le garde
+      // pour que les rotations de QR ne le régénèrent pas derrière (ce qui
+      // l'invaliderait pendant que le client le saisit).
       const code = await data.client.requestPairingCode(normalizedPhone);
+      data.pairingRequested = true;
       data.pairingCode = code;
       data.qrBase64 = null;
       console.log(`[${name}] 📲 Pairing code: ${code}`);
