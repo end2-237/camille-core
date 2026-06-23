@@ -265,6 +265,10 @@ async function spawnClient(data) {
     // les gros comptes → connexion instable. On laisse 60s.
     defaultQueryTimeoutMs: 60_000,
     connectTimeoutMs:      60_000,
+    // qrTimeout : délai laissé pour scanner le QR / saisir le pairing code avant
+    // que Baileys ne ferme la connexion. 60s par défaut = trop court sur un gros
+    // compte lent (l'utilisateur n'a pas le temps). On laisse 5 min.
+    qrTimeout:             300_000,
     keepAliveIntervalMs:   25_000,   // ping moins agressif → moins de faux "keep alive failed"
     retryRequestDelayMs:   2_000,
     // Pas d'historique : évite le flood de déchiffrement qui bloque l'event loop
