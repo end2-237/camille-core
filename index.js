@@ -295,17 +295,15 @@ async function spawnClient(data) {
 
     if (connection === 'open') {
       if (!sock.authState.creds.registered) {
-        console.log(`[${name}] ⏳ registered=false — attente 10s pour finalisation...`);
-        debugLog(`registered=false après connexion — attente 10s`);
-        await new Promise(r => setTimeout(r, 10000));
-        await saveCreds();
+        console.log(`[${name}] ⏳ registered=false — attente 5s pour finalisation...`);
+        debugLog(`registered=false après connexion — attente 5s`);
+        await new Promise(r => setTimeout(r, 5000));
         if (!sock.authState.creds.registered) {
-          console.warn(`[${name}] ⚠️ registered toujours false après 10s — on garde la session et on continue`);
-          debugLog(`registered toujours false après 10s — on continue quand même`);
-        } else {
-          console.log(`[${name}] ✅ registered passé à true après attente`);
-          debugLog(`registered passé à true après attente`);
+          console.warn(`[${name}] ⚠️ registered=false → forcé à true (session déjà couplée)`);
+          debugLog(`registered=false → forcé à true`);
+          sock.authState.creds.registered = true;
         }
+        await saveCreds();
       }
       setStatus('CONNECTED');
       data.qrBase64 = null;
