@@ -24,15 +24,27 @@ const path     = require('path');
 const fs        = require('fs');
 const pino     = require('pino');
 
-// Logger Baileys silencieux (évite de noyer les logs et la consommation CPU)
-const logger = pino({ level: process.env.BAILEYS_LOG_LEVEL || 'silent' });
-
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const PORT          = process.env.PORT          || 3000;
 const API_KEY       = process.env.API_KEY       || 'camille-core-secret';
 const N8N_WEBHOOK   = process.env.N8N_WEBHOOK_URL || '';
 const SESSIONS_DIR  = process.env.SESSIONS_DIR  || './sessions';
+
+// Logger Baileys → fichier baileys.log (niveau 'warn' par défaut : capture les
+// stream:error et vraies raisons de déconnexion, sans noyer le CPU). Mettre
+// BAILEYS_LOG_LEVEL=silent pour couper, ou =debug pour tout voir.
+try { fs.mkdirSync(SESSIONS_DIR, { recursive: true }); } catch {}
+const logger = pino(
+  { level: process.env.BAILEYS_LOG_LEVEL || 'warn' },
+  pino.destination(path.join(SESSIONS_DIR, 'baileys.log'))
+);
+
+// Debug applicatif → fichier (docker logs trop lent sur ce serveur)
+const debugLog = (msg) => {
+  const line = `[${new Date().toISOString()}] ${msg}\n`;
+  fs.appendFile(path.join(SESSIONS_DIR, 'debug.log'), line, () => {});
+};
 const MEDIA_DIR     = path.join(__dirname, 'public', 'media');
 const VERSION       = '2.0.0';
 const START_TIME    = Date.now();
@@ -260,6 +272,7 @@ async function spawnClient(data) {
   // ── Connexion / QR / pairing / déconnexion ───────────────────────────────
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
+    if (connection) debugLog(`connection.update: ${connection} registered=${sock.authState?.creds?.registered}${qr ? ' (qr)' : ''}`);
 
     if (qr) {
       setStatus('QR_READY');
@@ -311,6 +324,11 @@ async function spawnClient(data) {
       const code = lastDisconnect?.error?.output?.statusCode
                  || lastDisconnect?.error?.output?.payload?.statusCode;
       data.metrics.lastDisconnect = { reason: String(code || 'unknown'), at: Date.now() };
+      // Log COMPLET de la raison (pour diagnostiquer les déconnexions/registered:false)
+      const errMsg = lastDisconnect?.error?.message || '';
+      const errData = lastDisconnect?.error?.output?.payload
+        ? JSON.stringify(lastDisconnect.error.output.payload) : '';
+      debugLog(`CLOSE code=${code} registered=${sock.authState?.creds?.registered} msg="${errMsg}" payload=${errData}`);
       // Libérer la garde AVANT de reprogrammer (sinon scheduleReconnect refuse)
       data.reconnecting = false;
 
@@ -331,12 +349,6 @@ async function spawnClient(data) {
   });
 
   // ── Réception messages → forward n8n ─────────────────────────────────────
-  // Debug : log fichier puisque docker logs est indisponible sur ce serveur
-  const debugLog = (msg) => {
-    const line = `[${new Date().toISOString()}] ${msg}\n`;
-    fs.appendFile(path.join(SESSIONS_DIR, 'debug.log'), line, () => {});
-  };
-
   sock.ev.on('messages.upsert', async (upsert) => {
     debugLog(`messages.upsert reçu: type=${upsert.type} count=${upsert.messages?.length || 0}`);
     const messages = upsert.messages || [];
