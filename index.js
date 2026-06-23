@@ -31,12 +31,14 @@ const API_KEY       = process.env.API_KEY       || 'camille-core-secret';
 const N8N_WEBHOOK   = process.env.N8N_WEBHOOK_URL || '';
 const SESSIONS_DIR  = process.env.SESSIONS_DIR  || './sessions';
 
-// Logger Baileys → fichier baileys.log (niveau 'warn' par défaut : capture les
-// stream:error et vraies raisons de déconnexion, sans noyer le CPU). Mettre
-// BAILEYS_LOG_LEVEL=silent pour couper, ou =debug pour tout voir.
+// Logger Baileys → fichier baileys.log. Par défaut 'fatal' (quasi silencieux) :
+// sur un gros compte, le flot d'erreurs de déchiffrement écrites sur disque
+// ajoutait de l'I/O pendant la sync et aggravait le blocage de l'event loop.
+// Notre debugLog (léger) suffit pour suivre le cycle de connexion.
+// Mettre BAILEYS_LOG_LEVEL=warn (ou debug) pour ré-activer le diagnostic.
 try { fs.mkdirSync(SESSIONS_DIR, { recursive: true }); } catch {}
 const logger = pino(
-  { level: process.env.BAILEYS_LOG_LEVEL || 'warn' },
+  { level: process.env.BAILEYS_LOG_LEVEL || 'fatal' },
   pino.destination(path.join(SESSIONS_DIR, 'baileys.log'))
 );
 
@@ -258,9 +260,21 @@ async function spawnClient(data) {
     logger,
     printQRInTerminal: false,
     browser: ['Camille Core', 'Chrome', '2.0'],
-    syncFullHistory: false,          // pas d'historique → léger en RAM
+    // ── Durcissement pour comptes à fort volume (centaines de conversations) ──
+    // Les "init queries" (privacy, blocklist, app-state) timeoutaient à ~30s sur
+    // les gros comptes → connexion instable. On laisse 60s.
+    defaultQueryTimeoutMs: 60_000,
+    connectTimeoutMs:      60_000,
+    keepAliveIntervalMs:   25_000,   // ping moins agressif → moins de faux "keep alive failed"
+    retryRequestDelayMs:   2_000,
+    // Pas d'historique : évite le flood de déchiffrement qui bloque l'event loop
+    // (cause racine du keep-alive qui saute → spirale de reconnexion).
+    syncFullHistory: false,
+    shouldSyncHistoryMessage: () => false,
     markOnlineOnConnect: false,      // n'apparaît pas "en ligne" en permanence
     generateHighQualityLinkPreview: false,
+    // getMessage : requis pour les renvois (retry) sans planter.
+    getMessage: async () => undefined,
   });
 
   data.client = sock;
@@ -294,17 +308,11 @@ async function spawnClient(data) {
     }
 
     if (connection === 'open') {
-      if (!sock.authState.creds.registered) {
-        console.log(`[${name}] ⏳ registered=false — attente 5s pour finalisation...`);
-        debugLog(`registered=false après connexion — attente 5s`);
-        await new Promise(r => setTimeout(r, 5000));
-        if (!sock.authState.creds.registered) {
-          console.warn(`[${name}] ⚠️ registered=false → forcé à true (session déjà couplée)`);
-          debugLog(`registered=false → forcé à true`);
-          sock.authState.creds.registered = true;
-        }
-        await saveCreds();
-      }
+      // NB : on ne touche JAMAIS à creds.registered. Si la registration n'a pas
+      // fini (init queries lentes), Baileys la finalise tout seul une fois la
+      // connexion stable. On se contente de logger l'état pour diagnostic.
+      debugLog(`OPEN registered=${sock.authState?.creds?.registered}`);
+      await saveCreds();
       setStatus('CONNECTED');
       data.qrBase64 = null;
       data.pairingCode = null;
