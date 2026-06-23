@@ -6,10 +6,15 @@ services:
     # NE PAS mettre container_name ni ports — Coolify les gère
     init: true           # PID 1 propre (récolte les éventuels process orphelins)
     restart: unless-stopped
-    # ── Garde-fous anti-surcharge (Baileys est léger, mais on protège le VPS) ──
-    cpus: 1.0            # max 1 cœur — ne peut plus jamais saturer le serveur
-    mem_limit: 512m      # 512 Mo suffisent largement (Baileys ~80 Mo)
-    memswap_limit: 512m  # pas de swap pour ce conteneur
+    # ── Garde-fous anti-surcharge ────────────────────────────────────────────
+    # En régime stable Baileys est minuscule (~120 Mo, <2% CPU). MAIS à la
+    # connexion d'un gros compte (centaines de conversations), il y a un burst
+    # de sync/déchiffrement. Si on étouffe ce burst (512 Mo / 1 cœur), l'event
+    # loop stalle, le keep-alive saute et WhatsApp coupe → spirale de mort.
+    # On donne de la marge pour le burst, sans menacer le VPS (7,8 Go).
+    cpus: 2.0            # le burst se termine vite ; régime stable ~0
+    mem_limit: 1536m     # marge pour la sync ; régime stable ~120 Mo
+    memswap_limit: 2g    # swap de sécurité anti-OOM pendant le burst
     volumes:
       # Sessions WhatsApp (auth Baileys) — survit aux redémarrages et rebuilds
       - sessions-data:/app/sessions
