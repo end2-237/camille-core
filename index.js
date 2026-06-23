@@ -350,17 +350,30 @@ async function spawnClient(data) {
       // Libérer la garde AVANT de reprogrammer (sinon scheduleReconnect refuse)
       data.reconnecting = false;
 
-      if (code === DisconnectReason.loggedOut) {
+      // Un "conflict"/"replaced" = deux connexions concurrentes (autre appareil
+      // OU deuxième socket/container). Ce n'est PAS un logout : il ne faut SURTOUT
+      // pas effacer les creds (sinon on perd le couplage et il faut re-scanner).
+      const isConflict = /conflict|replaced/i.test(errMsg)
+                      || code === DisconnectReason.connectionReplaced;
+      // 515 = Baileys demande un redémarrage du flux, typiquement juste après le
+      // couplage. C'est normal → reconnexion IMMÉDIATE pour finaliser la registration.
+      const isRestart  = code === DisconnectReason.restartRequired;
+
+      if (code === DisconnectReason.loggedOut && !isConflict) {
         setStatus('AUTH_FAILURE');
         data.metrics.lastError = { msg: 'loggedOut — appareil délié, re-couplage requis', at: Date.now() };
         io.emit('session:update', { name, status: data.status });
         console.warn(`[${name}] ❌ Déconnecté (loggedOut) — re-couplage requis`);
         try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
         scheduleReconnect(name, 'loggedOut → nouveau couplage');
+      } else if (isRestart) {
+        setStatus('DISCONNECTED');
+        console.log(`[${name}] 🔁 Restart required (515) — reconnexion immédiate`);
+        scheduleReconnect(name, 'restart required (515)', { immediate: true });
       } else {
         setStatus('DISCONNECTED');
         io.emit('session:update', { name, status: data.status });
-        console.log(`[${name}] 🔌 Déconnecté (code ${code}) — reconnexion programmée`);
+        console.log(`[${name}] 🔌 Déconnecté (code ${code}${isConflict ? ' conflict' : ''}) — reconnexion programmée`);
         scheduleReconnect(name, `close code ${code}`);
       }
     }
@@ -457,13 +470,15 @@ function destroySocket(sock) {
 }
 
 // ── scheduleReconnect : ferme le socket mort puis en recrée un ────────────────
-function scheduleReconnect(name, reason) {
+function scheduleReconnect(name, reason, opts = {}) {
   const data = sessions.get(name);
   if (!data || data.stopped) return;
   if (data.reconnecting) return;
   data.reconnecting = true;
 
-  if (data.metrics.reconnectCount >= MAX_RECONNECT_TRIES) {
+  // Les reconnexions "immédiates" (515 post-couplage) ne comptent pas dans le
+  // quota d'essais : c'est une étape normale du protocole, pas un échec.
+  if (!opts.immediate && data.metrics.reconnectCount >= MAX_RECONNECT_TRIES) {
     data.metrics.lastError = { msg: `abandon reconnexion après ${MAX_RECONNECT_TRIES} essais (${reason})`, at: Date.now() };
     console.error(`[${name}] 🛑 Reconnexion abandonnée après ${MAX_RECONNECT_TRIES} essais.`);
     data.reconnecting = false;
@@ -471,18 +486,22 @@ function scheduleReconnect(name, reason) {
   }
 
   const tries = data.metrics.reconnectCount;
-  const delay = Math.min(RECONNECT_BASE_MS * Math.pow(2, tries), RECONNECT_MAX_MS);
+  const delay = opts.immediate
+    ? 1500
+    : Math.min(RECONNECT_BASE_MS * Math.pow(2, tries), RECONNECT_MAX_MS);
   console.log(`[${name}] 🔄 Reconnexion dans ${Math.round(delay/1000)}s (essai #${tries + 1}) — ${reason}`);
 
   clearTimeout(data.reconnectTimer);
   data.reconnectTimer = setTimeout(async () => {
-    data.metrics.reconnectCount += 1;
+    if (!opts.immediate) data.metrics.reconnectCount += 1;
     destroySocket(data.client);
     data.client = null;
     try {
       console.log(`[${name}] 🔁 Recréation d'un socket neuf...`);
       await spawnClient(data);
-      data.reconnecting = false;  // reconfirmé sur 'open'
+      // NE PAS remettre reconnecting=false ici : on garde la garde jusqu'à
+      // l'événement 'open' (succès) ou un nouveau 'close'. Sinon une 2e
+      // reconnexion peut créer un socket CONCURRENT → conflict (401).
     } catch (e) {
       data.reconnecting = false;
       data.metrics.lastError = { msg: `recréation: ${e.message}`, at: Date.now() };
