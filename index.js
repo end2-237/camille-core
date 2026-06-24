@@ -375,13 +375,15 @@ async function spawnClient(data) {
       // couplage. C'est normal → reconnexion IMMÉDIATE pour finaliser la registration.
       const isRestart  = code === DisconnectReason.restartRequired;
 
-      if (code === DisconnectReason.loggedOut && !isConflict) {
+      const isUnauthorized = code === 401 || code === DisconnectReason.loggedOut;
+      if (isUnauthorized && !isConflict) {
         setStatus('AUTH_FAILURE');
-        data.metrics.lastError = { msg: 'loggedOut — appareil délié, re-couplage requis', at: Date.now() };
+        const wasRegistered = sock.authState?.creds?.registered;
+        data.metrics.lastError = { msg: `auth failure (${code}) — re-couplage requis`, at: Date.now() };
         io.emit('session:update', { name, status: data.status });
-        console.warn(`[${name}] ❌ Déconnecté (loggedOut) — re-couplage requis`);
+        console.warn(`[${name}] ❌ Auth failure code=${code} registered=${wasRegistered} — suppression creds, re-couplage`);
         try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
-        scheduleReconnect(name, 'loggedOut → nouveau couplage');
+        scheduleReconnect(name, `auth failure ${code} → nouveau couplage`, { immediate: true });
       } else if (isRestart) {
         setStatus('DISCONNECTED');
         console.log(`[${name}] 🔁 Restart required (515) — reconnexion immédiate`);
@@ -464,8 +466,12 @@ async function maybeRequestPairing(data) {
   const sock = data.client;
   if (!sock || !data.phoneNumber) return;
   if (sock.authState?.creds?.registered) return;
-  if (data.pairingRequested) return;   // déjà demandé pour ce socket
+  if (data.pairingRequested) return;
   data.pairingRequested = true;
+  // Laisser le socket finir son init avant de demander le code —
+  // trop tôt = WhatsApp rejette silencieusement la demande.
+  await new Promise(r => setTimeout(r, 3000));
+  if (!data.client || data.client !== sock) return; // socket remplacé entre-temps
   try {
     const code = await sock.requestPairingCode(data.phoneNumber);
     data.pairingCode = code;
@@ -475,6 +481,7 @@ async function maybeRequestPairing(data) {
   } catch (e) {
     console.error(`[${data.name}] requestPairingCode échoué:`, e.message);
     data.metrics.lastError = { msg: `pairing: ${e.message}`, at: Date.now() };
+    data.pairingRequested = false;  // permettre un retry au prochain QR
   }
 }
 
@@ -680,12 +687,15 @@ app.get('/api/sessions', auth, (_req, res) => {
 });
 
 app.post('/api/sessions/start', auth, (req, res) => {
-  const { name } = req.body;
+  const { name, phone } = req.body;
   if (!name) return res.status(400).json({ error: 'name requis' });
   if (!sessions.has(name) && sessions.size >= MAX_SESSIONS) {
     return res.status(429).json({ error: `Plafond de ${MAX_SESSIONS} sessions atteint (anti-surcharge). Arrêtez-en une d'abord.` });
   }
   const s = createSession(name);
+  if (phone) {
+    s.phoneNumber = String(phone).replace(/[^0-9]/g, '');
+  }
   res.json({ success: true, name: s.name, status: s.status });
 });
 
