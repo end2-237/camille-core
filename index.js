@@ -57,6 +57,13 @@ const RECONNECT_BASE_MS    = Number(process.env.RECONNECT_BASE_MS)    || 5_000; 
 const RECONNECT_MAX_MS     = 5 * 60_000;                                          // backoff plafonné à 5 min
 const MAX_RECONNECT_TRIES  = Number(process.env.MAX_RECONNECT_TRIES)  || 10;      // au-delà → stoppe la boucle
 const INIT_TIMEOUT_MS      = Number(process.env.INIT_TIMEOUT_MS)      || 180_000; // bloqué en init > 3 min → recréation forcée
+// ── Anti-zombie ───────────────────────────────────────────────────────────────
+// Un device lié peut rester CONNECTED (keep-alive OK) alors que WhatsApp ne lui
+// livre plus AUCUN message. Le keep-alive ne détecte pas ça. On surveille donc
+// le silence du flux : après PROBE on sonde activement la connexion (round-trip
+// serveur), après HARD on force une reconnexion propre quoi qu'il arrive.
+const ZOMBIE_PROBE_AFTER_MS = Number(process.env.ZOMBIE_PROBE_AFTER_MS) || 5 * 60_000;   // sonde après 5 min de silence
+const ZOMBIE_HARD_MS        = Number(process.env.ZOMBIE_HARD_MS)        || 30 * 60_000;  // reco forcée après 30 min de silence
 // Plafond de sessions simultanées (anti-surcharge serveur). Baileys est léger,
 // mais on garde une limite stricte par sécurité (CPU/RAM du VPS).
 const MAX_SESSIONS         = Number(process.env.MAX_SESSIONS)         || 2;
@@ -212,6 +219,7 @@ function createSession(name) {
     metrics: {
       createdAt:        Date.now(),
       statusChangedAt:  Date.now(),
+      lastStreamAt:     Date.now(),   // dernier événement de flux (heartbeat anti-zombie)
       lastMessageAt:    null,
       messageCount:     0,
       lastWebhookOkAt:  null,
@@ -326,6 +334,7 @@ async function spawnClient(data) {
       debugLog(`OPEN registered=${sock.authState?.creds?.registered}`);
       await saveCreds();
       setStatus('CONNECTED');
+      data.metrics.lastStreamAt = Date.now();  // repart à neuf : pas de faux zombie juste après reconnexion
       data.qrBase64 = null;
       data.pairingCode = null;
       data.reconnecting = false;
@@ -381,6 +390,9 @@ async function spawnClient(data) {
 
   // ── Réception messages → forward n8n ─────────────────────────────────────
   sock.ev.on('messages.upsert', async (upsert) => {
+    // Tout événement de flux (même fromMe=true / status) prouve que la connexion
+    // reçoit encore → sert de battement de cœur pour la détection anti-zombie.
+    data.metrics.lastStreamAt = Date.now();
     debugLog(`messages.upsert reçu: type=${upsert.type} count=${upsert.messages?.length || 0}`);
     const messages = upsert.messages || [];
     // Accepter 'notify' (nouveaux messages) ET 'append' (certaines versions Baileys)
@@ -511,10 +523,27 @@ function scheduleReconnect(name, reason, opts = {}) {
   }, delay);
 }
 
-// ── Watchdog : détecte les blocages d'initialisation ──────────────────────────
+// ── Sonde de vivacité : round-trip serveur pour distinguer "calme" de "mort" ──
+// Renvoie true si la connexion répond, false si elle timeout/échoue.
+async function probeAlive(sock, phone) {
+  if (!sock) return false;
+  try {
+    const num = String(phone || '').replace(/[^0-9]/g, '') || '13135550002';
+    const res = await Promise.race([
+      sock.onWhatsApp(num),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('probe timeout')), 15_000)),
+    ]);
+    return Array.isArray(res);
+  } catch {
+    return false;
+  }
+}
+
+// ── Watchdog : détecte les blocages d'initialisation ET les zombies ───────────
 // Baileys n'a pas de "zombie Chrome" (pas de navigateur). Mais un socket peut
-// rester coincé en INITIALIZING (sync qui ne finit jamais). Au-delà de
-// INIT_TIMEOUT_MS, on force une recréation propre.
+// rester coincé en INITIALIZING (sync qui ne finit jamais) OU rester CONNECTED
+// sans plus rien recevoir (WhatsApp a cessé la livraison). On force une
+// recréation propre dans les deux cas.
 function startWatchdog(data) {
   const name = data.name;
   clearInterval(data.watchdogTimer);
@@ -531,6 +560,29 @@ function startWatchdog(data) {
         data.metrics.lastError = { msg: `init bloqué à ${data.status} depuis ${Math.round(stuckMs/1000)}s`, at: Date.now() };
         console.warn(`[${name}] ⏳ Watchdog : bloqué à ${data.status} → recréation forcée`);
         scheduleReconnect(name, `init stuck ${Math.round(stuckMs/1000)}s`);
+      }
+    }
+
+    // Détection ZOMBIE : CONNECTED mais flux entrant silencieux trop longtemps.
+    if (data.status === 'CONNECTED' && !data.reconnecting) {
+      const silentMs = Date.now() - (data.metrics.lastStreamAt || data.metrics.statusChangedAt);
+      if (silentMs > ZOMBIE_HARD_MS) {
+        // Backstop : même si la sonde répond, un silence aussi long en CONNECTED
+        // sur ce compte = livraison cassée → reconnexion forcée.
+        data.metrics.zombieKills += 1;
+        data.metrics.lastError = { msg: `zombie: silence ${Math.round(silentMs/60000)}min en CONNECTED → reconnexion forcée`, at: Date.now() };
+        console.warn(`[${name}] 🧟 Watchdog : silence ${Math.round(silentMs/60000)}min en CONNECTED → reconnexion forcée`);
+        scheduleReconnect(name, `zombie silence ${Math.round(silentMs/60000)}min`);
+      } else if (silentMs > ZOMBIE_PROBE_AFTER_MS) {
+        // Silence modéré : on sonde activement. Si la connexion ne répond plus,
+        // c'est un socket mort → reconnexion immédiate (sans attendre le backstop).
+        const alive = await probeAlive(data.client, data.phone);
+        if (!alive && data.status === 'CONNECTED' && !data.reconnecting) {
+          data.metrics.zombieKills += 1;
+          data.metrics.lastError = { msg: `zombie: sonde KO après ${Math.round(silentMs/60000)}min → reconnexion`, at: Date.now() };
+          console.warn(`[${name}] 🧟 Watchdog : sonde KO après ${Math.round(silentMs/60000)}min → reconnexion forcée`);
+          scheduleReconnect(name, `zombie probe failed ${Math.round(silentMs/60000)}min`);
+        }
       }
     }
 
