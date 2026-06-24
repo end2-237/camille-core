@@ -114,7 +114,9 @@ loadAnalytics();
 setInterval(compactAnalytics, 24 * 3600 * 1000);
 
 // ── Webhook config (persisted in webhooks.json) ───────────────────────────────
-const WEBHOOKS_FILE = path.join(__dirname, 'webhooks.json');
+// IMPORTANT : dans SESSIONS_DIR (volume Docker) et NON __dirname (/app, éphémère),
+// sinon la config des webhooks est perdue à chaque redéploiement/rebuild.
+const WEBHOOKS_FILE = path.join(SESSIONS_DIR, 'webhooks.json');
 
 function loadWebhookConfig() {
   try { if (fs.existsSync(WEBHOOKS_FILE)) return JSON.parse(fs.readFileSync(WEBHOOKS_FILE, 'utf8')); } catch {}
