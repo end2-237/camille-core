@@ -286,10 +286,15 @@ async function spawnClient(data) {
     qrTimeout:             300_000,
     keepAliveIntervalMs:   25_000,   // ping moins agressif → moins de faux "keep alive failed"
     retryRequestDelayMs:   2_000,
-    // Pas d'historique : évite le flood de déchiffrement qui bloque l'event loop
-    // (cause racine du keep-alive qui saute → spirale de reconnexion).
+    // ── Synchronisation ───────────────────────────────────────────────────────
+    // syncFullHistory: false → on NE télécharge PAS tout l'historique (un compte
+    // à centaines de chats = énorme). MAIS on NE désactive PAS la synchro
+    // essentielle (shouldSyncHistoryMessage par défaut) : c'est elle qui peuple
+    // les mappings LID. Sans ça, WhatsApp se connecte mais ne livre AUCUN message
+    // des contacts @lid (cause racine du "connecté mais sourd"). Cf. bug Baileys
+    // connu : "syncFullHistory:false + shouldSyncHistoryMessage:false → no LID
+    // mapping → no messages despite successful connection".
     syncFullHistory: false,
-    shouldSyncHistoryMessage: () => false,
     markOnlineOnConnect: false,      // n'apparaît pas "en ligne" en permanence
     generateHighQualityLinkPreview: false,
     // getMessage : requis pour les renvois (retry) sans planter.
