@@ -1,0 +1,17 @@
+# Don't rebuild on these file changes
+node_modules/
+.git/
+.gitignore
+README.md
+DEPLOYMENT.md
+docker-compose.yml
+Dockerfile
+.dockerignore
+.env.example
+.vscode/
+.idea/
+*.log
+.DS_Store
+coverage/
+dist/
+build/

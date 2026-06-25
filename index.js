@@ -1147,6 +1147,24 @@ app.delete('/api/media/:filename', auth, (req, res) => {
   }
 });
 
+// ── Health Check (Render/Vercel) ──────────────────────────────────────────────
+// Render periodically checks this endpoint to ensure service is alive.
+// If it fails consecutively, the service auto-restarts.
+
+app.get('/health', (req, res) => {
+  const uptimeMs = Date.now() - START_TIME;
+  const activeSessions = [...sessions.values()].filter(s => s.status === 'CONNECTED').length;
+  
+  res.status(200).json({
+    status: 'healthy',
+    version: VERSION,
+    uptime: Math.round(uptimeMs / 1000),
+    activeSessions,
+    totalSessions: sessions.size,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 
 io.on('connection', (socket) => {

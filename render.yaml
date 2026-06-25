@@ -1,0 +1,80 @@
+# ── Render Deployment Config ──────────────────────────────────────────────────
+# Camille Core — WhatsApp API Gateway
+# Deploy: render deploy --source camille-core
+# Docs: https://render.com/docs/native-runtimes
+
+services:
+  - type: web
+    name: camille-core
+    runtime: node
+    region: oregon  # Change to your preferred region (frankfurt, singapore, oregon, etc.)
+    plan: standard  # Free tier drops idle services; use Standard for production
+    
+    buildCommand: npm ci --omit=dev --prefer-offline --no-audit --no-fund
+    startCommand: node index.js
+    
+    envVars:
+      # ── Application Config ──
+      - key: NODE_ENV
+        value: production
+      
+      - key: PORT
+        value: 10000  # Render default port
+      
+      # WhatsApp API Key (CHANGE THIS!)
+      - key: API_KEY
+        value: your-secure-api-key-here
+      
+      # ── Sessions & Analytics Persistence (Render Disk) ──
+      # This volume is mounted at /var/data (persistent across deploys/restarts)
+      - key: SESSIONS_DIR
+        value: /var/data/sessions
+      
+      # ── N8N Webhook (Optional) ──
+      # - key: N8N_WEBHOOK_URL
+      #   value: https://your-n8n.com/webhook/camille
+      
+      # ── Monitoring & Logging ──
+      - key: BAILEYS_LOG_LEVEL
+        value: fatal  # Reduce logging overhead
+      
+      - key: WATCHDOG_INTERVAL_MS
+        value: "60000"
+      
+      - key: MAX_SESSIONS
+        value: "5"  # Adjust based on plan
+      
+      - key: ANALYTICS_RETENTION_DAYS
+        value: "90"
+    
+    # ── Persistent Disk ──────────────────────────────────────────────────────
+    # Stores sessions, auth state, analytics
+    # Size: 10GB (adjust if needed)
+    # Path: /var/data (as referenced in SESSIONS_DIR env var above)
+    disk:
+      name: camille-data
+      mountPath: /var/data
+      sizeGb: 10
+    
+    # ── Health Check ────────────────────────────────────────────────────────
+    # Render checks this endpoint every 30s; if it fails, the service restarts
+    healthCheckPath: /health
+    
+    # ── Preemptible Instances ──
+    # Render offers cheaper "preemptible" instances (can be interrupted)
+    # Set to true only if you can tolerate brief interruptions
+    preemptible: false
+    
+    # ── Autoscaling (Advanced) ──
+    # For production: scale up to 2-3 instances for redundancy
+    # autoscale:
+    #   minInstances: 1
+    #   maxInstances: 3
+    #   targetMemoryPercent: 60
+    #   targetCpuPercent: 70
+
+# ── Pull Requests ────────────────────────────────────────────────────────────
+# Optional: Deploy PR previews automatically
+pullRequest:
+  previewsEnabled: true
+  previewPlanName: standard
