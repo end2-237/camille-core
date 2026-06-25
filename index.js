@@ -13,6 +13,7 @@ const {
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   DisconnectReason,
+  Browsers,
 } = require('@whiskeysockets/baileys');
 
 const express  = require('express');
@@ -274,7 +275,10 @@ async function spawnClient(data) {
     },
     logger,
     printQRInTerminal: false,
-    browser: ['Camille Core', 'Chrome', '2.0'],
+    // Identité desktop RÉELLE : un browser custom ('Camille Core') fait rejeter
+    // les codes de pairing par WhatsApp (issues #1761/#2370). Browsers.macOS('Chrome')
+    // = chaîne standard reconnue → pairing fiable.
+    browser: Browsers.macOS('Chrome'),
     // ── Durcissement pour comptes à fort volume (centaines de conversations) ──
     // Les "init queries" (privacy, blocklist, app-state) timeoutaient à ~30s sur
     // les gros comptes → connexion instable. On laisse 60s.
@@ -376,14 +380,26 @@ async function spawnClient(data) {
       const isRestart  = code === DisconnectReason.restartRequired;
 
       const isUnauthorized = code === 401 || code === DisconnectReason.loggedOut;
-      if (isUnauthorized && !isConflict) {
+      const wasRegistered  = sock.authState?.creds?.registered;
+      if (isUnauthorized && !isConflict && !wasRegistered) {
+        // 401 + registered=false = enregistrement JAMAIS terminé → les creds sont
+        // provisoires et inutilisables. On les efface et on re-couple proprement.
         setStatus('AUTH_FAILURE');
-        const wasRegistered = sock.authState?.creds?.registered;
-        data.metrics.lastError = { msg: `auth failure (${code}) — re-couplage requis`, at: Date.now() };
+        data.metrics.lastError = { msg: `auth failure (${code}) registration incomplète — re-couplage`, at: Date.now() };
         io.emit('session:update', { name, status: data.status });
-        console.warn(`[${name}] ❌ Auth failure code=${code} registered=${wasRegistered} — suppression creds, re-couplage`);
+        console.warn(`[${name}] ❌ Auth failure code=${code} registered=false — creds provisoires effacés, re-couplage`);
         try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
-        scheduleReconnect(name, `auth failure ${code} → nouveau couplage`, { immediate: true });
+        scheduleReconnect(name, `auth failure ${code} (non enregistré) → nouveau couplage`, { immediate: true });
+      } else if (isUnauthorized && !isConflict && wasRegistered) {
+        // 401 sur une session DÉJÀ enregistrée : probablement un conflit auto-infligé
+        // (2 sockets) byte-identique à un vrai logout. On NE supprime PAS les creds
+        // (sinon boucle de re-couplage infinie #2110/#2248). On reconnecte avec les
+        // mêmes creds ; si c'est un vrai logout, le couplage WhatsApp restera invalide.
+        setStatus('DISCONNECTED');
+        data.metrics.lastError = { msg: `401 sur session enregistrée — reconnexion sans effacer creds`, at: Date.now() };
+        io.emit('session:update', { name, status: data.status });
+        console.warn(`[${name}] ⚠️  401 (registered=true) — conflit probable, reconnexion SANS effacer les creds`);
+        scheduleReconnect(name, `401 enregistré (conflit probable)`);
       } else if (isRestart) {
         setStatus('DISCONNECTED');
         console.log(`[${name}] 🔁 Restart required (515) — reconnexion immédiate`);
