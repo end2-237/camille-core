@@ -495,12 +495,34 @@ async function spawnClient(data) {
         })
         .catch((err) => {
           data.metrics.webhookErrors += 1;
+          
+          // Déterminer le message d'erreur approprié
+          let errorMsg = err.message;
+          let errorDetails = '';
+          
+          if (err.response?.status === 404) {
+            errorMsg = 'webhook 404: URL not found or webhook deleted';
+            errorDetails = ` — Vérifier l'URL du webhook dans n8n (peut avoir été supprimée)`;
+          } else if (err.response?.status === 401 || err.response?.status === 403) {
+            errorMsg = `webhook ${err.response.status}: Access denied`;
+            errorDetails = ` — Vérifier les permissions ou clés API du webhook`;
+          } else if (err.code === 'ECONNREFUSED') {
+            errorMsg = 'webhook: connexion refusée';
+            errorDetails = ` — Vérifier que le serveur n8n est accessible`;
+          } else if (err.code === 'ETIMEDOUT' || err.code === 'ECONNABORTED') {
+            errorMsg = 'webhook: timeout';
+            errorDetails = ` — Webhook trop lent (>30s)`;
+          }
+          
           data.metrics.lastError = {
-            msg: `webhook error: ${err.message}`,
+            msg: `webhook error: ${errorMsg}`,
             at: Date.now(),
             status: err.response?.status,
+            code: err.code,
+            url: webhookUrl.substring(0, 80),
           };
-          debugLog(`  ✗ webhook ERROR: ${err.message} (status: ${err.response?.status || 'N/A'})`);
+          
+          debugLog(`  ✗ webhook ERROR: ${errorMsg}${errorDetails} (status: ${err.response?.status || 'N/A'}, code: ${err.code || 'N/A'})`);
         });
     }
   });
@@ -1060,7 +1082,7 @@ app.get('/api/health/detailed', auth, (_req, res) => {
   });
 });
 
-// ── Analytics ─────────────────────────────────────────────────────────────────
+// ── Analytics ────────────────────────────────���────────────────────────────────
 
 function bucketKey(ts, granularity) {
   const d = new Date(ts);
@@ -1238,7 +1260,11 @@ app.post('/api/config/webhooks/:session/test', auth, async (req, res) => {
   }
   
   if (!url) {
-    return res.status(404).json({ error: 'Aucun webhook configuré pour cette session' });
+    return res.status(404).json({
+      success: false,
+      error: 'Aucun webhook configuré pour cette session',
+      session,
+    });
   }
   
   try {
@@ -1266,6 +1292,7 @@ app.post('/api/config/webhooks/:session/test', auth, async (req, res) => {
     res.json({
       success: true,
       message: 'Webhook test OK',
+      url,
       response: {
         status: response.status,
         statusText: response.statusText,
@@ -1273,11 +1300,26 @@ app.post('/api/config/webhooks/:session/test', auth, async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('[webhooks-test] error:', err.message);
+    console.error('[webhooks-test] error:', err.message, 'status:', err.response?.status);
+    
+    // Analyse l'erreur pour fournir des suggestions
+    let suggestion = '';
+    if (err.response?.status === 404) {
+      suggestion = 'Le webhook n8n n\'existe pas ou a été supprimé. Vérifier l\'URL dans n8n.';
+    } else if (err.response?.status === 401 || err.response?.status === 403) {
+      suggestion = 'Authentification échouée. Vérifier les permissions du webhook.';
+    } else if (err.code === 'ECONNREFUSED') {
+      suggestion = 'Connexion refusée. Vérifier que le serveur n8n est accessible.';
+    } else if (err.code === 'ENOTFOUND') {
+      suggestion = 'Domaine introuvable. Vérifier l\'URL du webhook.';
+    } else if (err.code === 'ETIMEDOUT') {
+      suggestion = 'Timeout: le webhook ne répond pas assez vite.';
+    }
     
     res.status(400).json({
       success: false,
       error: 'Webhook test failed',
+      url,
       details: {
         message: err.message,
         code: err.code,
@@ -1285,6 +1327,7 @@ app.post('/api/config/webhooks/:session/test', auth, async (req, res) => {
         statusText: err.response?.statusText,
         data: err.response?.data,
       },
+      suggestion,
     });
   }
 });
