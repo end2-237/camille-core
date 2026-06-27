@@ -120,19 +120,38 @@ setInterval(compactAnalytics, 24 * 3600 * 1000);
 const WEBHOOKS_FILE = path.join(SESSIONS_DIR, 'webhooks.json');
 
 function loadWebhookConfig() {
-  try { if (fs.existsSync(WEBHOOKS_FILE)) return JSON.parse(fs.readFileSync(WEBHOOKS_FILE, 'utf8')); } catch {}
-  return { global: N8N_WEBHOOK, sessions: {} };
+  try {
+    if (fs.existsSync(WEBHOOKS_FILE)) {
+      const cfg = JSON.parse(fs.readFileSync(WEBHOOKS_FILE, 'utf8'));
+      return cfg;
+    }
+  } catch (e) {
+    console.warn('[webhooks] load error:', e.message);
+  }
+  return { global: N8N_WEBHOOK || '', sessions: {} };
 }
 
 function saveWebhookConfig(cfg) {
-  try { fs.writeFileSync(WEBHOOKS_FILE, JSON.stringify(cfg, null, 2)); } catch (e) { console.error('webhooks.json write error:', e.message); }
+  try {
+    // Valider la structure
+    if (!cfg.sessions) cfg.sessions = {};
+    fs.writeFileSync(WEBHOOKS_FILE, JSON.stringify(cfg, null, 2));
+    console.log('[webhooks] config saved:', JSON.stringify(cfg, null, 2));
+  } catch (e) {
+    console.error('[webhooks] save error:', e.message);
+  }
 }
 
 let webhookConfig = loadWebhookConfig();
+// Initialiser sessions s'il n'existe pas
 if (!webhookConfig.sessions) webhookConfig.sessions = {};
-if (!webhookConfig.global && N8N_WEBHOOK) webhookConfig.global = N8N_WEBHOOK;
+// Définir le global depuis env si pas encore défini
+if (!webhookConfig.global && N8N_WEBHOOK) {
+  webhookConfig.global = N8N_WEBHOOK;
+  saveWebhookConfig(webhookConfig);
+}
 
-// ── Serveur HTTP + Socket.io ──────────────────────────────────────────────────
+// ── Serveur HTTP + Socket.io ─────────────────��────────────────────────────────
 
 const app    = express();
 const server = http.createServer(app);
@@ -443,33 +462,45 @@ async function spawnClient(data) {
         data.metrics.emptyBodyCount += 1;
       }
 
-      const webhookUrl = webhookConfig.sessions[name]
-        || process.env[`N8N_WEBHOOK_${name.toUpperCase()}`]
-        || webhookConfig.global
-        || N8N_WEBHOOK;
-      if (!webhookUrl) { debugLog(`  ✗ pas de webhook configuré`); continue; }
+      // Déterminer l'URL du webhook pour cette session
+      const sessionWebhook = webhookConfig.sessions[name];
+      const envWebhook = process.env[`N8N_WEBHOOK_${name.toUpperCase()}`];
+      const webhookUrl = sessionWebhook || envWebhook || webhookConfig.global || N8N_WEBHOOK;
+      
+      if (!webhookUrl) {
+        debugLog(`  ✗ pas de webhook configuré (checked: sessions[${name}]=${sessionWebhook}, env=${envWebhook}, global=${webhookConfig.global})`);
+        continue;
+      }
 
-      axios.post(webhookUrl, {
-          event:   'message',
-          session: name,
-          payload: {
-            id:         m.key.id,
-            from,
-            fromMe:     false,
-            body,
-            type:       t,
-            timestamp:  Number(m.messageTimestamp) || Math.floor(Date.now() / 1000),
-            notifyName: m.pushName || '',
-          },
-        }, { timeout: 30000 })
-        .then(() => {
+      debugLog(`  → webhook: ${webhookUrl.substring(0, 80)}... (source: ${sessionWebhook ? 'session' : envWebhook ? 'env' : 'global'})`);
+
+      const payload = {
+        event:   'message',
+        session: name,
+        payload: {
+          id:         m.key.id,
+          from,
+          fromMe:     false,
+          body,
+          type:       t,
+          timestamp:  Number(m.messageTimestamp) || Math.floor(Date.now() / 1000),
+          notifyName: m.pushName || '',
+        },
+      };
+
+      axios.post(webhookUrl, payload, { timeout: 30000, headers: { 'Content-Type': 'application/json' } })
+        .then((response) => {
           data.metrics.lastWebhookOkAt = Date.now();
-          debugLog(`  ✓ webhook OK`);
+          debugLog(`  ✓ webhook OK (${response.status})`);
         })
         .catch((err) => {
           data.metrics.webhookErrors += 1;
-          data.metrics.lastError = { msg: `webhook: ${err.message}`, at: Date.now() };
-          debugLog(`  ✗ webhook ERROR: ${err.message}`);
+          data.metrics.lastError = {
+            msg: `webhook error: ${err.message}`,
+            at: Date.now(),
+            status: err.response?.status,
+          };
+          debugLog(`  ✗ webhook ERROR: ${err.message} (status: ${err.response?.status || 'N/A'})`);
         });
     }
   });
@@ -1097,20 +1128,165 @@ app.get('/api/analytics', auth, (req, res) => {
 // ── Webhook config ────────────────────────────────────────────────────────────
 
 app.get('/api/config/webhooks', auth, (_req, res) => {
-  res.json({ global: webhookConfig.global || '', sessions: webhookConfig.sessions });
+  res.json({
+    global: webhookConfig.global || '',
+    sessions: webhookConfig.sessions || {},
+  });
 });
 
-app.post('/api/config/webhooks', auth, (req, res) => {
-  const { session, url } = req.body;
-  if (!session) return res.status(400).json({ error: 'session requis' });
-  if (session === '__global__') {
-    webhookConfig.global = url || '';
-  } else {
-    if (url) webhookConfig.sessions[session] = url;
-    else delete webhookConfig.sessions[session];
+app.post('/api/config/webhooks', auth, async (req, res) => {
+  const { session, url, test = false } = req.body;
+  
+  if (!session) {
+    return res.status(400).json({ error: 'session requis' });
   }
+  
+  if (!url || url.trim() === '') {
+    // Supprimer le webhook pour cette session
+    if (session === '__global__') {
+      webhookConfig.global = '';
+    } else {
+      delete webhookConfig.sessions[session];
+    }
+    saveWebhookConfig(webhookConfig);
+    return res.json({ success: true, message: 'Webhook supprimé' });
+  }
+  
+  // Valider URL
+  try {
+    new URL(url);
+  } catch (e) {
+    return res.status(400).json({ error: 'URL invalide: ' + e.message });
+  }
+  
+  // Tester le webhook avant de le sauvegarder
+  if (test) {
+    try {
+      const testPayload = {
+        event: 'test',
+        session: session === '__global__' ? 'default' : session,
+        payload: {
+          id: 'test-' + Date.now(),
+          from: '1234567890@s.whatsapp.net',
+          body: 'Test webhook - Camille Core',
+          type: 'chat',
+          timestamp: Math.floor(Date.now() / 1000),
+        },
+      };
+      
+      const response = await axios.post(url, testPayload, {
+        timeout: 10000,
+        headers: { 'Content-Type': 'application/json' },
+      });
+      
+      console.log('[webhooks] test OK:', response.status);
+    } catch (err) {
+      return res.status(400).json({
+        error: 'Webhook test failed: ' + err.message,
+        details: err.response?.status || 'Connection error',
+      });
+    }
+  }
+  
+  // Sauvegarder la configuration
+  if (session === '__global__') {
+    webhookConfig.global = url;
+  } else {
+    webhookConfig.sessions[session] = url;
+  }
+  
   saveWebhookConfig(webhookConfig);
-  res.json({ success: true });
+  
+  res.json({
+    success: true,
+    message: 'Webhook configuré avec succès',
+    config: {
+      session,
+      url: url,
+      tested: test,
+    },
+  });
+});
+
+// GET /api/config/webhooks/:session — obtenir le webhook d'une session
+app.get('/api/config/webhooks/:session', auth, (req, res) => {
+  const { session } = req.params;
+  
+  let url = '';
+  if (session === '__global__') {
+    url = webhookConfig.global || '';
+  } else {
+    url = webhookConfig.sessions[session] || webhookConfig.global || '';
+  }
+  
+  res.json({
+    session,
+    url,
+    source: webhookConfig.sessions[session] ? 'session' : (webhookConfig.global ? 'global' : 'none'),
+  });
+});
+
+// POST /api/config/webhooks/:session/test — tester le webhook d'une session
+app.post('/api/config/webhooks/:session/test', auth, async (req, res) => {
+  const { session } = req.params;
+  
+  let url = '';
+  if (session === '__global__') {
+    url = webhookConfig.global || '';
+  } else {
+    url = webhookConfig.sessions[session] || webhookConfig.global || '';
+  }
+  
+  if (!url) {
+    return res.status(404).json({ error: 'Aucun webhook configuré pour cette session' });
+  }
+  
+  try {
+    const testPayload = {
+      event: 'test',
+      session: session === '__global__' ? 'default' : session,
+      payload: {
+        id: 'test-' + Date.now(),
+        from: '1234567890@s.whatsapp.net',
+        body: 'Test webhook - Camille Core',
+        type: 'chat',
+        timestamp: Math.floor(Date.now() / 1000),
+      },
+    };
+    
+    console.log('[webhooks-test] sending to:', url, 'payload:', JSON.stringify(testPayload));
+    
+    const response = await axios.post(url, testPayload, {
+      timeout: 10000,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    
+    console.log('[webhooks-test] response OK:', response.status, response.statusText);
+    
+    res.json({
+      success: true,
+      message: 'Webhook test OK',
+      response: {
+        status: response.status,
+        statusText: response.statusText,
+        data: response.data,
+      },
+    });
+  } catch (err) {
+    console.error('[webhooks-test] error:', err.message);
+    
+    res.status(400).json({
+      success: false,
+      error: 'Webhook test failed',
+      details: {
+        message: err.message,
+        code: err.code,
+        status: err.response?.status,
+        statusText: err.response?.statusText,
+        data: err.response?.data,
+      },
+    });
+  }
 });
 
 // ── Media Storage ─────────────────────────────────────────────────────────────
