@@ -138,7 +138,11 @@ const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, { cors: { origin: '*' } });
 
-app.use(express.json({ limit: '100mb' }));
+// Limite à 30 Mo : un base64 de 100 Mo en RAM × plusieurs uploads simultanés
+// pouvait déclencher l'OOM sur le container (1536 Mo). 30 Mo couvre largement
+// vidéos/docs WhatsApp (limite WA = 16 Mo média, 100 Mo doc → base64 ~40 Mo,
+// mais on passe par fetchMediaBuffer côté URL pour les gros).
+app.use(express.json({ limit: '30mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── Middleware auth ───────────────────────────────────────────────────────────
@@ -196,6 +200,57 @@ function msgType(m) {
   if (msg.locationMessage) return 'location';
   if (msg.contactMessage)  return 'vcard';
   return 'unknown';
+}
+
+// ── Caches de stabilité ───────────────────────────────────────────────────────
+// (a) Messages envoyés : pour getMessage() → permet à Baileys de RE-chiffrer un
+//     message quand le destinataire demande un "retry" (sinon "en attente de ce
+//     message" côté contact). Borné en mémoire.
+const SENT_MSG_CACHE_MAX = 1000;
+const sentMessages = new Map(); // id → message
+function rememberMessage(id, message) {
+  if (!id || !message) return;
+  if (sentMessages.has(id)) return;
+  sentMessages.set(id, message);
+  if (sentMessages.size > SENT_MSG_CACHE_MAX) {
+    sentMessages.delete(sentMessages.keys().next().value);
+  }
+}
+
+// (b) Déduplication des messages entrants : WhatsApp peut re-livrer un message
+//     après une reconnexion → sans ça, le webhook part 2× → double réponse du bot.
+const DEDUP_MAX = 3000;
+const seenMessageIds = new Set();
+function alreadySeen(id) {
+  if (!id) return false;
+  if (seenMessageIds.has(id)) return true;
+  seenMessageIds.add(id);
+  if (seenMessageIds.size > DEDUP_MAX) {
+    seenMessageIds.delete(seenMessageIds.values().next().value);
+  }
+  return false;
+}
+
+// (c) Métadonnées de groupe en cache : évite que Baileys re-interroge le serveur
+//     à CHAQUE message de groupe (→ rate-limit WhatsApp → déconnexion).
+const groupMetaCache = new Map(); // jid → metadata
+
+// (d) Envoi webhook avec réessais (backoff) : un hoquet de n8n ne fait plus
+//     perdre le message.
+async function postWebhookWithRetry(url, payload, name) {
+  const delays = [0, 2000, 5000]; // 3 tentatives : immédiat, +2s, +5s
+  let lastErr;
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i]) await new Promise(r => setTimeout(r, delays[i]));
+    try {
+      await axios.post(url, payload, { timeout: 30000 });
+      return true;
+    } catch (e) {
+      lastErr = e;
+      debugLog(`  ⟳ webhook tentative ${i + 1}/${delays.length} KO: ${e.message}`);
+    }
+  }
+  throw lastErr;
 }
 
 // ── Session Manager ───────────────────────────────────────────────────────────
@@ -301,8 +356,13 @@ async function spawnClient(data) {
     syncFullHistory: false,
     markOnlineOnConnect: false,      // n'apparaît pas "en ligne" en permanence
     generateHighQualityLinkPreview: false,
-    // getMessage : requis pour les renvois (retry) sans planter.
-    getMessage: async () => undefined,
+    // getMessage : renvoie l'original depuis notre cache pour satisfaire les
+    // demandes de retry de (re)chiffrement de WhatsApp (sinon "en attente de ce
+    // message" côté contact). undefined si absent → Baileys gère proprement.
+    getMessage: async (key) => sentMessages.get(key?.id),
+    // cachedGroupMetadata : sert les métadonnées de groupe depuis le cache local
+    // au lieu de ré-interroger le serveur à chaque message → anti rate-limit.
+    cachedGroupMetadata: async (jid) => groupMetaCache.get(jid),
   });
 
   data.client = sock;
@@ -349,6 +409,7 @@ async function spawnClient(data) {
       data.qrBase64 = null;
       data.pairingCode = null;
       data.reconnecting = false;
+      data.reconnectingSince = null;
       data.metrics.reconnectCount = 0;
       try {
         const id = sock.user?.id || '';
@@ -424,11 +485,22 @@ async function spawnClient(data) {
     if (upsert.type === 'append' && messages.every(m => !m.message)) return;
 
     for (const m of messages) {
+      // Mémoriser TOUT message avec contenu (y compris les nôtres, fromMe) pour
+      // getMessage() → permet le retry de (re)chiffrement demandé par WhatsApp.
+      if (m.message && m.key?.id) rememberMessage(m.key.id, m.message);
+
       debugLog(`  msg: fromMe=${m.key?.fromMe} jid=${m.key?.remoteJid} hasMessage=${!!m.message} type=${msgType(m)}`);
       if (!m.message) continue;
       if (m.key.fromMe) continue;
       const jid = m.key.remoteJid;
       if (!jid || jid === 'status@broadcast') continue;
+
+      // Anti-doublon : un même message re-livré après reconnexion ne déclenche
+      // qu'UN seul webhook.
+      if (alreadySeen(m.key.id)) {
+        debugLog(`  ⊘ doublon ignoré id=${m.key.id}`);
+        continue;
+      }
 
       const body = extractBody(m);
       const from = toLegacyId(jid);
@@ -449,7 +521,7 @@ async function spawnClient(data) {
         || N8N_WEBHOOK;
       if (!webhookUrl) { debugLog(`  ✗ pas de webhook configuré`); continue; }
 
-      axios.post(webhookUrl, {
+      postWebhookWithRetry(webhookUrl, {
           event:   'message',
           session: name,
           payload: {
@@ -461,7 +533,7 @@ async function spawnClient(data) {
             timestamp:  Number(m.messageTimestamp) || Math.floor(Date.now() / 1000),
             notifyName: m.pushName || '',
           },
-        }, { timeout: 30000 })
+        }, name)
         .then(() => {
           data.metrics.lastWebhookOkAt = Date.now();
           debugLog(`  ✓ webhook OK`);
@@ -469,9 +541,27 @@ async function spawnClient(data) {
         .catch((err) => {
           data.metrics.webhookErrors += 1;
           data.metrics.lastError = { msg: `webhook: ${err.message}`, at: Date.now() };
-          debugLog(`  ✗ webhook ERROR: ${err.message}`);
+          debugLog(`  ✗ webhook ERROR (après retries): ${err.message}`);
         });
     }
+  });
+
+  // ── Cache des métadonnées de groupe (anti rate-limit) ─────────────────────
+  // On rafraîchit le cache quand un groupe change ou que ses participants bougent.
+  const refreshGroupMeta = async (jid) => {
+    try {
+      const meta = await sock.groupMetadata(jid);
+      if (meta) groupMetaCache.set(jid, meta);
+    } catch (e) { debugLog(`  groupMetadata KO ${jid}: ${e.message}`); }
+  };
+  sock.ev.on('groups.update', async (updates) => {
+    for (const u of updates) if (u.id) await refreshGroupMeta(u.id);
+  });
+  sock.ev.on('group-participants.update', async (ev) => {
+    if (ev.id) await refreshGroupMeta(ev.id);
+  });
+  sock.ev.on('groups.upsert', async (groups) => {
+    for (const g of groups) if (g.id) groupMetaCache.set(g.id, g);
   });
 
   return sock;
@@ -517,6 +607,7 @@ function scheduleReconnect(name, reason, opts = {}) {
   if (!data || data.stopped) return;
   if (data.reconnecting) return;
   data.reconnecting = true;
+  data.reconnectingSince = Date.now();   // pour détecter une reconnexion coincée
 
   // Les reconnexions "immédiates" (515 post-couplage) ne comptent pas dans le
   // quota d'essais : c'est une étape normale du protocole, pas un échec.
@@ -623,6 +714,20 @@ function startWatchdog(data) {
         data.metrics.zombieKills += 1;
         console.warn(`[${name}] ⏳ Watchdog : DISCONNECTED depuis ${Math.round(stuckMs/1000)}s sans reconnexion → relance`);
         scheduleReconnect(name, `watchdog disconnected stuck ${Math.round(stuckMs/1000)}s`);
+      }
+    }
+
+    // Reconnexion COINCÉE : la garde reconnecting est tenue jusqu'à 'open', mais
+    // si le socket recréé reste bloqué en "connecting" (ni open ni close), la
+    // garde ne se libère jamais → plus aucune reconnexion. On force le rattrapage
+    // après 3 min (au-delà du connectTimeoutMs de Baileys).
+    if (data.reconnecting && data.reconnectingSince) {
+      const stuckMs = Date.now() - data.reconnectingSince;
+      if (stuckMs > 180_000) {
+        data.metrics.zombieKills += 1;
+        data.reconnecting = false; // débloque la garde
+        console.warn(`[${name}] 🧯 Watchdog : reconnexion coincée ${Math.round(stuckMs/1000)}s → relance forcée`);
+        scheduleReconnect(name, `reconnexion coincée ${Math.round(stuckMs/1000)}s`);
       }
     }
   }, WATCHDOG_INTERVAL_MS);
@@ -1165,6 +1270,9 @@ server.listen(PORT, () => {
   console.log(`🔑 API Key      → ${API_KEY}`);
   console.log(`📡 Webhook n8n  → ${N8N_WEBHOOK || '(non configuré)'}`);
   console.log(`🧩 Max sessions → ${MAX_SESSIONS}\n`);
+  if (API_KEY === 'camille-core-secret') {
+    console.warn('⚠️  SÉCURITÉ : API_KEY par défaut utilisée ! Définis la variable d\'env API_KEY en production (sinon n\'importe qui peut envoyer des messages depuis ton WhatsApp).');
+  }
   autoStartSessions();
 });
 
