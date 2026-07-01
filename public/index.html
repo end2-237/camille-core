@@ -601,6 +601,100 @@
     .mon-issue.crit { color: var(--red); }
     .mon-err { font-size: 11px; color: var(--muted); font-family: var(--mono); margin-top: 8px; word-break: break-all; }
 
+    /* ─── MONITORING : layout 2 colonnes + console de logs ─────────────────── */
+    .mon-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+    @media (max-width: 1100px) { .mon-layout { grid-template-columns: 1fr; } }
+    .mon-left { min-width: 0; }
+    .mon-right { position: sticky; top: 92px; min-width: 0; }
+    .mon-section-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin-bottom: 12px; display: flex; align-items: baseline; gap: 8px; }
+    .mon-section-hint { font-size: 11px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--muted2); }
+    .mon-layout .mon-grid { grid-template-columns: 1fr; }
+    .mon-card { cursor: pointer; transition: border-color .15s, background .15s, transform .05s; }
+    .mon-card:hover { border-color: var(--border2); }
+    .mon-card.selected { border-color: var(--accent-border); background: linear-gradient(180deg, var(--accent-bg), transparent 40%); }
+    .mon-card-view-logs { font-size: 11px; color: var(--muted); display: inline-flex; align-items: center; gap: 5px; margin-top: 10px; }
+    .mon-card.selected .mon-card-view-logs { color: var(--accent); }
+
+    .log-console { background: #0c0c0e; border: 1px solid var(--border2); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; height: calc(100vh - 190px); min-height: 380px; }
+    .log-console-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    .log-console-title { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .log-console-title b { font-family: var(--mono); color: var(--accent); font-weight: 500; }
+    .log-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: logpulse 2s ease-in-out infinite; }
+    @keyframes logpulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+    .log-console-actions { display: flex; align-items: center; gap: 12px; }
+    .log-autoscroll { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+    .log-autoscroll input { accent-color: var(--accent); }
+    .log-btn { background: var(--surface2); border: 1px solid var(--border2); color: var(--muted); border-radius: 6px; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: color .15s, border-color .15s; }
+    .log-btn:hover { color: var(--accent); border-color: var(--accent-border); }
+    .log-console-body { flex: 1; overflow-y: auto; padding: 10px 0; font-family: var(--mono); font-size: 12px; line-height: 1.7; }
+    .log-console-body::-webkit-scrollbar { width: 10px; }
+    .log-console-body::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 6px; }
+    .log-line { display: flex; gap: 10px; padding: 1px 14px; white-space: pre-wrap; word-break: break-word; }
+    .log-line:hover { background: rgba(255,255,255,.02); }
+    .log-time { color: var(--muted2); flex-shrink: 0; }
+    .log-msg { color: #c7c7d6; }
+    .log-msg.ok  { color: var(--accent); }
+    .log-msg.err { color: var(--red); }
+    .log-msg.warn { color: var(--yellow); }
+    .log-msg.info { color: var(--blue); }
+    .log-empty { color: var(--muted2); text-align: center; padding: 40px 20px; font-family: var(--font); }
+
+    /* ─── VERSIONING PAGE ──────────────────────────────────────────────────── */
+    .ver-engine-badge { font-family: var(--mono); font-size: 12px; font-weight: 600; padding: 7px 14px; border-radius: 99px; background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-border); }
+    .ver-hero { background: linear-gradient(135deg, var(--accent-bg), transparent 60%), var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 24px; margin-bottom: 24px; }
+    .ver-hero-top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .ver-hero-version { font-size: 30px; font-weight: 700; letter-spacing: -1px; }
+    .ver-hero-version span { color: var(--accent); }
+    .ver-tag { font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 99px; text-transform: uppercase; letter-spacing: .5px; }
+    .ver-tag.stable { background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-border); }
+    .ver-tag.rc     { background: var(--yellow-bg); color: var(--yellow); border: 1px solid rgba(251,191,36,.25); }
+    .ver-hero-desc { color: var(--muted); margin-top: 10px; max-width: 720px; line-height: 1.6; }
+    .ver-hero-meta { display: flex; gap: 26px; margin-top: 18px; flex-wrap: wrap; }
+    .ver-hero-meta > div { display: flex; flex-direction: column; gap: 2px; }
+    .ver-hero-meta .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+    .ver-hero-meta .v { font-family: var(--mono); font-size: 14px; }
+
+    .ver-section-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--text); margin: 28px 0 14px; display: flex; align-items: center; gap: 8px; }
+    .ver-section-title::before { content: ''; width: 3px; height: 15px; background: var(--accent); border-radius: 2px; }
+
+    .ver-current-bugs { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+    .ver-bug { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--yellow); border-radius: var(--radius); padding: 16px; }
+    .ver-bug.mitigated { border-left-color: var(--accent); }
+    .ver-bug.watch { border-left-color: var(--blue); }
+    .ver-bug-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+    .ver-bug-title { font-weight: 600; font-size: 13.5px; }
+    .ver-bug-sev { font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 99px; text-transform: uppercase; letter-spacing: .4px; flex-shrink: 0; }
+    .ver-bug-sev.low  { background: var(--blue-bg); color: var(--blue); }
+    .ver-bug-sev.med  { background: var(--yellow-bg); color: var(--yellow); }
+    .ver-bug-sev.ok   { background: var(--accent-bg); color: var(--accent); }
+    .ver-bug-desc { font-size: 12.5px; color: var(--muted); line-height: 1.55; }
+    .ver-bug-fix { font-size: 12px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--text); display: flex; gap: 7px; }
+    .ver-bug-fix .lbl { color: var(--accent); font-weight: 600; flex-shrink: 0; }
+    .ver-bug-ref { font-family: var(--mono); font-size: 11px; color: var(--muted2); margin-top: 6px; }
+
+    .ver-timeline { position: relative; padding-left: 26px; }
+    .ver-timeline::before { content: ''; position: absolute; left: 7px; top: 6px; bottom: 6px; width: 2px; background: var(--border2); }
+    .ver-tl-item { position: relative; padding: 0 0 22px; }
+    .ver-tl-item::before { content: ''; position: absolute; left: -23px; top: 4px; width: 12px; height: 12px; border-radius: 50%; background: var(--surface2); border: 2px solid var(--muted2); }
+    .ver-tl-item.current::before { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 10px var(--accent-border); }
+    .ver-tl-item.danger::before  { border-color: var(--red); }
+    .ver-tl-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+    .ver-tl-ver { font-family: var(--mono); font-weight: 600; font-size: 14px; }
+    .ver-tl-badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 99px; }
+    .ver-tl-badge.current { background: var(--accent-bg); color: var(--accent); }
+    .ver-tl-badge.old { background: var(--surface2); color: var(--muted); }
+    .ver-tl-badge.danger { background: var(--red-bg); color: var(--red); }
+    .ver-tl-bugs { list-style: none; display: flex; flex-direction: column; gap: 5px; margin-top: 4px; }
+    .ver-tl-bugs li { font-size: 12.5px; color: var(--muted); display: flex; gap: 8px; line-height: 1.5; }
+    .ver-tl-bugs li::before { content: '—'; color: var(--muted2); flex-shrink: 0; }
+    .ver-tl-bugs li.good { color: var(--text); }
+    .ver-tl-bugs li.good::before { content: '✓'; color: var(--accent); }
+    .ver-tl-bugs li.bad::before  { content: '✕'; color: var(--red); }
+
+    .ver-changelog { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 22px; }
+    .ver-cl-item { display: flex; gap: 12px; padding: 7px 0; font-size: 13px; }
+    .ver-cl-item .ico { width: 20px; height: 20px; border-radius: 6px; background: var(--accent-bg); color: var(--accent); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 12px; }
+
     .config-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -1006,6 +1100,17 @@
         </svg>
         Configuration
       </div>
+
+      <div class="nav-item" id="nav-versioning" onclick="switchView('versioning')">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 2v9a2 2 0 0 0 2 2h6"/>
+          <circle cx="4" cy="13" r="1.6"/>
+          <circle cx="12" cy="4" r="1.6"/>
+          <circle cx="12" cy="10" r="1.6"/>
+          <path d="M12 5.6v2.8"/>
+        </svg>
+        Versioning
+      </div>
     </nav>
 
     <div class="sidebar-footer">
@@ -1061,12 +1166,50 @@
       <div class="content-body">
         <!-- KPIs serveur -->
         <div id="mon-kpis" class="mon-kpis"></div>
-        <!-- Cartes par session -->
-        <div id="mon-grid" class="mon-grid"></div>
-        <div id="mon-empty" style="display:none;color:var(--muted);text-align:center;padding:40px;">
-          Aucune session à surveiller.
+
+        <!-- Layout deux colonnes : détails sessions + console de logs -->
+        <div class="mon-layout">
+          <div class="mon-left">
+            <div class="mon-section-title">Sessions <span class="mon-section-hint">cliquez une carte pour voir ses logs →</span></div>
+            <div id="mon-grid" class="mon-grid"></div>
+            <div id="mon-empty" style="display:none;color:var(--muted);text-align:center;padding:40px;">
+              Aucune session à surveiller.
+            </div>
+          </div>
+
+          <div class="mon-right">
+            <div class="log-console">
+              <div class="log-console-head">
+                <div class="log-console-title">
+                  <span class="log-dot"></span>
+                  Journal — <b id="log-session-name">aucune session</b>
+                </div>
+                <div class="log-console-actions">
+                  <label class="log-autoscroll"><input type="checkbox" id="log-autoscroll" checked /> auto-scroll</label>
+                  <button class="log-btn" onclick="refreshSelectedLogs()" title="Rafraîchir">
+                    <svg viewBox="0 0 14 14" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12.5 7a5.5 5.5 0 1 1-1.6-3.9M12.5 1v3h-3"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div id="log-console-body" class="log-console-body">
+                <div class="log-empty">Sélectionnez une session pour voir ses logs en direct.</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
+    </div>
+
+    <!-- ── Versioning view ── -->
+    <div id="view-versioning">
+      <div class="content-header">
+        <div>
+          <div class="content-title">Versioning &amp; Compatibilité</div>
+          <div class="content-subtitle" id="ver-subtitle">Moteur WhatsApp, bugs connus &amp; historique</div>
+        </div>
+        <div class="ver-engine-badge" id="ver-engine-badge">Baileys —</div>
+      </div>
+      <div class="content-body" id="ver-body"></div>
     </div>
 
     <!-- ── Analytics view ── -->
@@ -1454,6 +1597,11 @@
     // Monitoring : refresh régulier pour garder le badge d'alerte à jour
     refreshMonitoring();
     monitoringInterval = setInterval(refreshMonitoring, 15000);
+    // Logs de session en quasi temps réel quand la vue Monitoring est visible
+    setInterval(() => {
+      const monVisible = document.getElementById('view-monitoring').classList.contains('active');
+      if (monVisible && selectedLogSession) refreshSelectedLogs();
+    }, 4000);
   }
 
   // ── Socket.io ──────────────────────────────────────────────────────────────
@@ -1487,7 +1635,7 @@
 
   // ── Views ──────────────────────────────────────────────────────────────────
   function switchView(view) {
-    ['sessions', 'monitoring', 'analytics', 'config'].forEach(v => {
+    ['sessions', 'monitoring', 'analytics', 'config', 'versioning'].forEach(v => {
       document.getElementById(`view-${v}`).classList.remove('active');
       document.getElementById(`nav-${v}`).classList.remove('active');
     });
@@ -1504,6 +1652,9 @@
     }
     if (view === 'analytics') {
       refreshAnalytics();
+    }
+    if (view === 'versioning') {
+      renderVersioning();
     }
   }
 
@@ -1661,8 +1812,19 @@
 
     const grid = document.getElementById('mon-grid');
     const empty = document.getElementById('mon-empty');
-    if (!d.sessions.length) { grid.innerHTML = ''; empty.style.display = 'block'; return; }
+    if (!d.sessions.length) {
+      grid.innerHTML = ''; empty.style.display = 'block';
+      selectedLogSession = null;
+      document.getElementById('log-session-name').textContent = 'aucune session';
+      document.getElementById('log-console-body').innerHTML = '<div class="log-empty">Aucune session active.</div>';
+      return;
+    }
     empty.style.display = 'none';
+
+    // Auto-sélectionne la 1re session si aucune n'est encore choisie
+    if (!selectedLogSession || !d.sessions.some(s => s.name === selectedLogSession)) {
+      selectedLogSession = d.sessions[0].name;
+    }
 
     grid.innerHTML = d.sessions.map(s => {
       const emptyCls = s.emptyBodyCount > 0 ? 'bad' : '';
@@ -1675,8 +1837,9 @@
       ).join('');
       const lastErr = s.lastError
         ? `<div class="mon-err">Dernière erreur (${fmtAgo(s.lastError.at)}): ${escapeHtml(s.lastError.msg)}</div>` : '';
+      const sel = s.name === selectedLogSession ? 'selected' : '';
       return `
-        <div class="mon-card health-${s.health}">
+        <div class="mon-card health-${s.health} ${sel}" onclick="selectLogSession('${escHtml(s.name)}')">
           <div class="mon-card-head">
             <div class="mon-card-name">${escapeHtml(s.name)}${s.phone ? ` · ${escapeHtml(s.phone)}` : ''}</div>
             <div class="mon-pill ${s.health}">${s.health === 'ok' ? 'Sain' : s.health === 'warn' ? 'Alerte' : 'Critique'}</div>
@@ -1693,12 +1856,197 @@
             <div><div class="mon-stat-label">Watchdog</div><div class="mon-stat-val">${fmtAgo(s.lastWatchdogAt)}</div></div>
           </div>
           ${issues || lastErr ? `<div class="mon-issues">${issues}${lastErr}</div>` : ''}
+          <div class="mon-card-view-logs">
+            <svg viewBox="0 0 14 14" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h10M2 7h10M2 11h6"/></svg>
+            ${sel ? 'Logs affichés →' : 'Voir les logs'}
+          </div>
         </div>`;
     }).join('');
+
+    document.getElementById('log-session-name').textContent = selectedLogSession || 'aucune session';
+    refreshSelectedLogs();
+  }
+
+  // ── Console de logs par session ──────────────────────────────────────────────
+  let selectedLogSession = null;
+
+  function selectLogSession(name) {
+    selectedLogSession = name;
+    document.querySelectorAll('#mon-grid .mon-card').forEach(c => c.classList.remove('selected'));
+    document.getElementById('log-session-name').textContent = name;
+    refreshSelectedLogs();
+    refreshMonitoring();
+  }
+
+  const LOG_CLASS = (msg) => {
+    if (/ERROR|✗|échou|Échec|failed|critique/i.test(msg)) return 'err';
+    if (/✓|OPEN|webhook OK|connecté/i.test(msg))          return 'ok';
+    if (/🔄|reconnexion|coincée|zombie|doublon|⊘/i.test(msg)) return 'warn';
+    if (/CLOSE|code=|registered/i.test(msg))              return 'info';
+    return '';
+  };
+
+  async function refreshSelectedLogs() {
+    if (!selectedLogSession) return;
+    const body = document.getElementById('log-console-body');
+    try {
+      const d = await apiFetch(`/api/sessions/${encodeURIComponent(selectedLogSession)}/logs?limit=200`);
+      if (!d.logs || !d.logs.length) {
+        body.innerHTML = '<div class="log-empty">Aucun événement pour l\'instant — les logs apparaîtront dès l\'activité de la session.</div>';
+        return;
+      }
+      const fmtT = (t) => { const dt = new Date(t); const p = n => String(n).padStart(2,'0'); return `${p(dt.getHours())}:${p(dt.getMinutes())}:${p(dt.getSeconds())}`; };
+      body.innerHTML = d.logs.map(l =>
+        `<div class="log-line"><span class="log-time">${fmtT(l.t)}</span><span class="log-msg ${LOG_CLASS(l.msg)}">${escapeHtml(l.msg)}</span></div>`
+      ).join('');
+      const auto = document.getElementById('log-autoscroll');
+      if (auto && auto.checked) body.scrollTop = body.scrollHeight;
+    } catch (e) {
+      body.innerHTML = `<div class="log-empty">Erreur de chargement des logs : ${escapeHtml(e.message)}</div>`;
+    }
   }
 
   function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ── Versioning & compatibilité ───────────────────────────────────────────────
+  let serverBaileysVersion = null;
+
+  // Bugs connus / points de vigilance de la version Baileys ACTUELLE (7.0.0-rc)
+  const CURRENT_BUGS = [
+    { title: 'Version "release candidate"', sev: 'med', cls: 'watch',
+      desc: 'La 7.0.0-rc n\'est pas encore marquée "stable" officiellement. En pratique c\'est la seule branche qui gère le protocole WhatsApp actuel et l\'adressage @lid.',
+      fix: 'On épingle la dernière RC (rc13) qui a corrigé les régressions des RC précédentes.', ref: 'npm: @whiskeysockets/baileys@7.0.0-rc13' },
+    { title: 'Event lid-mapping.update peu fiable', sev: 'low', cls: 'mitigated',
+      desc: 'L\'événement de mise à jour du mapping LID ne se déclenche pas toujours.',
+      fix: 'On résout les mappings via signalRepository.lidMapping (getPNForLID) plutôt que via l\'event.', ref: 'issue #2263' },
+    { title: 'Connexion "sourde" possible (keepalive)', sev: 'low', cls: 'mitigated',
+      desc: 'Le keepalive ne détecte que le silence total de frames ; un socket à moitié mort peut rester "open" sans livrer de messages.',
+      fix: 'Notre watchdog anti-zombie sonde à 5 min et force une reconnexion à 30 min de silence.', ref: 'issue #2132' },
+    { title: 'Épuisement des prekeys sur très longue session', sev: 'low', cls: 'watch',
+      desc: 'Baileys ne ré-uploade les prekeys qu\'à la connexion ; une session de plusieurs jours peut en manquer pour de nouveaux contacts.',
+      fix: 'Le watchdog force des reconnexions périodiques qui ré-uploadent les prekeys.', ref: 'issues #936 / #2234' },
+  ];
+
+  // Historique des versions Baileys et leurs bugs marquants
+  const BAILEYS_HISTORY = [
+    { ver: '7.0.0-rc13', badge: 'current', state: 'current', date: 'Actuelle',
+      bugs: [
+        { t: 'Support @lid (LinkedID) natif — mapping lid↔numéro', k: 'good' },
+        { t: 'Protocole WhatsApp à jour, migration de session LID automatique', k: 'good' },
+        { t: 'Correctifs des régressions rc.8 (fuite mémoire) et rc-10 (groupes)', k: 'good' },
+        { t: 'Branche "release candidate" (pas encore tag stable)', k: 'warn' },
+      ] },
+    { ver: '7.0.0-rc10', badge: 'old', state: 'danger', date: 'RC intermédiaire',
+      bugs: [
+        { t: 'Messages de groupe silencieusement droppés (migrateSession)', k: 'bad', ref: '#2548' },
+      ] },
+    { ver: '7.0.0-rc8', badge: 'old', state: 'danger', date: 'RC intermédiaire',
+      bugs: [
+        { t: 'Fuite mémoire', k: 'bad', ref: '#2090' },
+      ] },
+    { ver: '6.7.23', badge: 'old', state: 'old', date: 'Dernière 6.x stable',
+      bugs: [
+        { t: 'Correctif de sécurité spoofing inclus (≥ 6.7.22)', k: 'good' },
+        { t: 'AUCUN support @lid → "No session" / "Bad MAC" sur contacts @lid', k: 'bad' },
+        { t: 'Protocole en retard → déconnexions aléatoires sur chats migrés', k: 'bad' },
+      ] },
+    { ver: '6.7.16', badge: 'old', state: 'danger', date: 'Ancienne version de camille-core',
+      bugs: [
+        { t: 'Déconnexion "connecté mais sourd" après ~15-17h', k: 'bad' },
+        { t: 'Pas de support @lid', k: 'bad' },
+        { t: 'Vulnérabilité de spoofing de messages (< 6.7.22)', k: 'bad' },
+      ] },
+  ];
+
+  // Changelog camille-core v3
+  const CAMILLE_CHANGELOG = [
+    'Migration du moteur vers Baileys 7.0.0-rc13 (support @lid natif)',
+    'Couplage fiabilisé : browser desktop standard + délai pairing + phone dans /start',
+    'Gestion 401 intelligente : ne supprime plus les creds d\'une session enregistrée',
+    'Watchdog anti-zombie + rattrapage des reconnexions coincées',
+    'Déduplication des messages entrants (fin des doubles réponses)',
+    'Webhook avec réessais (0/2s/5s) — plus de perte sur hoquet n8n',
+    'getMessage + cache métadonnées de groupe (anti rate-limit)',
+    'Limite d\'upload abaissée à 30 Mo (anti-OOM)',
+    'Monitoring détaillé + journal de session en temps réel',
+    'Nouvelle page Versioning & compatibilité',
+  ];
+
+  function renderVersioning() {
+    const bv = serverBaileysVersion || '7.0.0-rc13';
+    document.getElementById('ver-engine-badge').textContent = `Baileys ${bv}`;
+    const isRc = /rc/i.test(bv);
+
+    const heroTag = isRc
+      ? '<span class="ver-tag rc">Release candidate</span>'
+      : '<span class="ver-tag stable">Stable</span>';
+
+    const bugsHtml = CURRENT_BUGS.map(b => {
+      const sevLabel = b.sev === 'med' ? 'À surveiller' : b.sev === 'low' ? 'Mineur' : 'OK';
+      const sevCls = b.sev === 'med' ? 'med' : b.sev === 'low' ? 'low' : 'ok';
+      return `
+        <div class="ver-bug ${b.cls}">
+          <div class="ver-bug-head">
+            <div class="ver-bug-title">${escapeHtml(b.title)}</div>
+            <div class="ver-bug-sev ${sevCls}">${sevLabel}</div>
+          </div>
+          <div class="ver-bug-desc">${escapeHtml(b.desc)}</div>
+          <div class="ver-bug-fix"><span class="lbl">Parade :</span><span>${escapeHtml(b.fix)}</span></div>
+          <div class="ver-bug-ref">${escapeHtml(b.ref)}</div>
+        </div>`;
+    }).join('');
+
+    const timelineHtml = BAILEYS_HISTORY.map(v => {
+      const badgeCls = v.badge === 'current' ? 'current' : v.state === 'danger' ? 'danger' : 'old';
+      const badgeLabel = v.badge === 'current' ? 'Actuelle' : v.state === 'danger' ? 'Buguée' : 'Ancienne';
+      const bugs = v.bugs.map(b =>
+        `<li class="${b.k === 'good' ? 'good' : b.k === 'bad' ? 'bad' : ''}">${escapeHtml(b.t)}${b.ref ? ` <span style="color:var(--muted2);font-family:var(--mono)">${escapeHtml(b.ref)}</span>` : ''}</li>`
+      ).join('');
+      return `
+        <div class="ver-tl-item ${v.state === 'current' ? 'current' : v.state === 'danger' ? 'danger' : ''}">
+          <div class="ver-tl-head">
+            <span class="ver-tl-ver">${escapeHtml(v.ver)}</span>
+            <span class="ver-tl-badge ${badgeCls}">${badgeLabel}</span>
+            <span style="font-size:11px;color:var(--muted)">${escapeHtml(v.date)}</span>
+          </div>
+          <ul class="ver-tl-bugs">${bugs}</ul>
+        </div>`;
+    }).join('');
+
+    const changelogHtml = CAMILLE_CHANGELOG.map(c =>
+      `<div class="ver-cl-item"><span class="ico">✓</span><span>${escapeHtml(c)}</span></div>`
+    ).join('');
+
+    document.getElementById('ver-body').innerHTML = `
+      <div class="ver-hero">
+        <div class="ver-hero-top">
+          <div class="ver-hero-version">camille-core <span>v3.0</span></div>
+          ${heroTag}
+        </div>
+        <div class="ver-hero-desc">
+          camille-core v3 tourne sur le moteur <b>Baileys ${escapeHtml(bv)}</b> — la première branche qui gère
+          l'adressage <b>@lid</b> de WhatsApp de façon native. C'est ce qui met fin aux déconnexions
+          « connecté mais sourd » et aux pertes de messages des versions 6.x.
+        </div>
+        <div class="ver-hero-meta">
+          <div><span class="k">Moteur</span><span class="v">Baileys ${escapeHtml(bv)}</span></div>
+          <div><span class="k">Transport</span><span class="v">WebSocket (sans Chrome)</span></div>
+          <div><span class="k">Adressage</span><span class="v">@lid natif</span></div>
+          <div><span class="k">Statut</span><span class="v">${isRc ? 'Release candidate' : 'Stable'}</span></div>
+        </div>
+      </div>
+
+      <div class="ver-section-title">Bugs connus &amp; points de vigilance — version actuelle</div>
+      <div class="ver-current-bugs">${bugsHtml}</div>
+
+      <div class="ver-section-title">Historique des versions Baileys &amp; leurs bugs</div>
+      <div class="ver-timeline">${timelineHtml}</div>
+
+      <div class="ver-section-title">Nouveautés camille-core v3</div>
+      <div class="ver-changelog">${changelogHtml}</div>
+    `;
   }
 
   // ── Pairing code ───────────────────────────────────────────────────────────
@@ -1995,6 +2343,7 @@
   async function refreshServerInfo() {
     try {
       const data = await apiFetch('/api/server/info');
+      serverBaileysVersion = data.baileysVersion || serverBaileysVersion;
       document.getElementById('info-version').textContent  = data.version  || '—';
       document.getElementById('info-uptime').textContent   = formatUptime(data.uptime);
       document.getElementById('info-sessions').textContent = data.sessions ?? '—';
