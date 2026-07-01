@@ -49,8 +49,25 @@ const debugLog = (msg) => {
   fs.appendFile(path.join(SESSIONS_DIR, 'debug.log'), line, () => {});
 };
 const MEDIA_DIR     = path.join(__dirname, 'public', 'media');
-const VERSION       = '2.0.0';
+const VERSION       = '3.0.0';
 const START_TIME    = Date.now();
+
+// Version de Baileys réellement installée (pour la page Versioning du dashboard)
+let BAILEYS_VERSION = 'inconnue';
+try { BAILEYS_VERSION = require('@whiskeysockets/baileys/package.json').version; } catch {}
+
+// ── Journal par session (ring buffer en mémoire) ──────────────────────────────
+// Chaque session garde ses N dernières lignes d'événements → affichées en direct
+// dans le monitoring, à côté des détails de la session.
+const SESSION_LOG_MAX = 250;
+const sessionLogRing = new Map(); // name → [{ t, msg }]
+function pushSessionLog(name, msg) {
+  if (!name) return;
+  let ring = sessionLogRing.get(name);
+  if (!ring) { ring = []; sessionLogRing.set(name, ring); }
+  ring.push({ t: Date.now(), msg });
+  if (ring.length > SESSION_LOG_MAX) ring.shift();
+}
 
 // ── Stabilité : watchdog & reconnexion ────────────────────────────────────────
 const WATCHDOG_INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS) || 60_000;  // surveillance toutes les 60s
@@ -369,12 +386,16 @@ async function spawnClient(data) {
 
   const setStatus = (s) => { data.status = s; data.metrics.statusChangedAt = Date.now(); };
 
+  // Journal de session : écrit dans debug.log (préfixé [name]) ET dans le ring
+  // buffer mémoire exposé par /api/sessions/:name/logs.
+  const slog = (msg) => { debugLog(`[${name}] ${msg}`); pushSessionLog(name, msg); };
+
   sock.ev.on('creds.update', saveCreds);
 
   // ── Connexion / QR / pairing / déconnexion ───────────────────────────────
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
-    if (connection) debugLog(`connection.update: ${connection} registered=${sock.authState?.creds?.registered}${qr ? ' (qr)' : ''}`);
+    if (connection) slog(`connection.update: ${connection} registered=${sock.authState?.creds?.registered}${qr ? ' (qr)' : ''}`);
 
     if (qr) {
       setStatus('QR_READY');
@@ -402,7 +423,7 @@ async function spawnClient(data) {
       // NB : on ne touche JAMAIS à creds.registered. Si la registration n'a pas
       // fini (init queries lentes), Baileys la finalise tout seul une fois la
       // connexion stable. On se contente de logger l'état pour diagnostic.
-      debugLog(`OPEN registered=${sock.authState?.creds?.registered}`);
+      slog(`OPEN registered=${sock.authState?.creds?.registered}`);
       await saveCreds();
       setStatus('CONNECTED');
       data.metrics.lastStreamAt = Date.now();  // repart à neuf : pas de faux zombie juste après reconnexion
@@ -427,7 +448,7 @@ async function spawnClient(data) {
       const errMsg = lastDisconnect?.error?.message || '';
       const errData = lastDisconnect?.error?.output?.payload
         ? JSON.stringify(lastDisconnect.error.output.payload) : '';
-      debugLog(`CLOSE code=${code} registered=${sock.authState?.creds?.registered} msg="${errMsg}" payload=${errData}`);
+      slog(`CLOSE code=${code} registered=${sock.authState?.creds?.registered} msg="${errMsg}" payload=${errData}`);
       // Libérer la garde AVANT de reprogrammer (sinon scheduleReconnect refuse)
       data.reconnecting = false;
 
@@ -479,7 +500,7 @@ async function spawnClient(data) {
     // Tout événement de flux (même fromMe=true / status) prouve que la connexion
     // reçoit encore → sert de battement de cœur pour la détection anti-zombie.
     data.metrics.lastStreamAt = Date.now();
-    debugLog(`messages.upsert reçu: type=${upsert.type} count=${upsert.messages?.length || 0}`);
+    slog(`messages.upsert reçu: type=${upsert.type} count=${upsert.messages?.length || 0}`);
     const messages = upsert.messages || [];
     // Accepter 'notify' (nouveaux messages) ET 'append' (certaines versions Baileys)
     if (upsert.type === 'append' && messages.every(m => !m.message)) return;
@@ -489,7 +510,7 @@ async function spawnClient(data) {
       // getMessage() → permet le retry de (re)chiffrement demandé par WhatsApp.
       if (m.message && m.key?.id) rememberMessage(m.key.id, m.message);
 
-      debugLog(`  msg: fromMe=${m.key?.fromMe} jid=${m.key?.remoteJid} hasMessage=${!!m.message} type=${msgType(m)}`);
+      slog(`msg: fromMe=${m.key?.fromMe} jid=${m.key?.remoteJid} hasMessage=${!!m.message} type=${msgType(m)}`);
       if (!m.message) continue;
       if (m.key.fromMe) continue;
       const jid = m.key.remoteJid;
@@ -498,7 +519,7 @@ async function spawnClient(data) {
       // Anti-doublon : un même message re-livré après reconnexion ne déclenche
       // qu'UN seul webhook.
       if (alreadySeen(m.key.id)) {
-        debugLog(`  ⊘ doublon ignoré id=${m.key.id}`);
+        slog(`⊘ doublon ignoré id=${m.key.id}`);
         continue;
       }
 
@@ -509,7 +530,7 @@ async function spawnClient(data) {
       data.metrics.lastMessageAt = Date.now();
       data.metrics.messageCount += 1;
       recordAnalytics(name, from);
-      debugLog(`  → message accepté: from=${from} body="${body?.substring(0,50)}" type=${t}`);
+      slog(`→ message accepté: from=${from} body="${body?.substring(0,50)}" type=${t}`);
 
       if ((!body || body.trim() === '') && t === 'chat') {
         data.metrics.emptyBodyCount += 1;
@@ -519,7 +540,7 @@ async function spawnClient(data) {
         || process.env[`N8N_WEBHOOK_${name.toUpperCase()}`]
         || webhookConfig.global
         || N8N_WEBHOOK;
-      if (!webhookUrl) { debugLog(`  ✗ pas de webhook configuré`); continue; }
+      if (!webhookUrl) { slog(`✗ pas de webhook configuré`); continue; }
 
       postWebhookWithRetry(webhookUrl, {
           event:   'message',
@@ -536,12 +557,12 @@ async function spawnClient(data) {
         }, name)
         .then(() => {
           data.metrics.lastWebhookOkAt = Date.now();
-          debugLog(`  ✓ webhook OK`);
+          slog(`✓ webhook OK (${from})`);
         })
         .catch((err) => {
           data.metrics.webhookErrors += 1;
           data.metrics.lastError = { msg: `webhook: ${err.message}`, at: Date.now() };
-          debugLog(`  ✗ webhook ERROR (après retries): ${err.message}`);
+          slog(`✗ webhook ERROR (après retries): ${err.message}`);
         });
     }
   });
@@ -608,6 +629,7 @@ function scheduleReconnect(name, reason, opts = {}) {
   if (data.reconnecting) return;
   data.reconnecting = true;
   data.reconnectingSince = Date.now();   // pour détecter une reconnexion coincée
+  pushSessionLog(name, `🔄 reconnexion programmée — ${reason}`);
 
   // Les reconnexions "immédiates" (515 post-couplage) ne comptent pas dans le
   // quota d'essais : c'est une étape normale du protocole, pas un échec.
@@ -1040,10 +1062,23 @@ app.get('/api/server/info', auth, (_req, res) => {
   res.json({
     version:  VERSION,
     engine:   'baileys',
+    baileysVersion: BAILEYS_VERSION,
     uptime:   Math.floor((Date.now() - START_TIME) / 1000),
     sessions: sessions.size,
     maxSessions: MAX_SESSIONS,
     connected: [...sessions.values()].filter(s => s.status === 'CONNECTED').length,
+  });
+});
+
+// ── Journal d'une session (temps réel) ──────────────────────────────────────────
+app.get('/api/sessions/:name/logs', auth, (req, res) => {
+  const name = req.params.name;
+  const limit = Math.min(Number(req.query.limit) || 120, SESSION_LOG_MAX);
+  const ring = sessionLogRing.get(name) || [];
+  res.json({
+    name,
+    exists: sessions.has(name),
+    logs: ring.slice(-limit),
   });
 });
 
