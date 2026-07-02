@@ -7,14 +7,25 @@
 
 'use strict';
 
-const makeWASocket = require('@whiskeysockets/baileys').default;
-const {
-  useMultiFileAuthState,
-  fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
-  DisconnectReason,
-  Browsers,
-} = require('@whiskeysockets/baileys');
+// Baileys 7.x est un module ESM pur ("type":"module") → require() échoue sur
+// Node < 22.12 (ERR_REQUIRE_ESM). On le charge donc via import() dynamique
+// (compatible avec tous les Node en CommonJS) au démarrage, avant toute session.
+let makeWASocket;
+let useMultiFileAuthState;
+let fetchLatestBaileysVersion;
+let makeCacheableSignalKeyStore;
+let DisconnectReason;
+let Browsers;
+
+async function loadBaileys() {
+  const b = await import('@whiskeysockets/baileys');
+  makeWASocket                = b.makeWASocket || b.default;
+  useMultiFileAuthState       = b.useMultiFileAuthState;
+  fetchLatestBaileysVersion   = b.fetchLatestBaileysVersion;
+  makeCacheableSignalKeyStore = b.makeCacheableSignalKeyStore;
+  DisconnectReason            = b.DisconnectReason;
+  Browsers                    = b.Browsers;
+}
 
 const express  = require('express');
 const http     = require('http');
@@ -1300,16 +1311,25 @@ io.on('connection', (socket) => {
 
 // ── Démarrage ─────────────────────────────────────────────────────────────────
 
-server.listen(PORT, () => {
-  console.log(`\n🔥 Camille Core v${VERSION} (Baileys) → http://localhost:${PORT}`);
-  console.log(`🔑 API Key      → ${API_KEY}`);
-  console.log(`📡 Webhook n8n  → ${N8N_WEBHOOK || '(non configuré)'}`);
-  console.log(`🧩 Max sessions → ${MAX_SESSIONS}\n`);
-  if (API_KEY === 'camille-core-secret') {
-    console.warn('⚠️  SÉCURITÉ : API_KEY par défaut utilisée ! Définis la variable d\'env API_KEY en production (sinon n\'importe qui peut envoyer des messages depuis ton WhatsApp).');
+// On charge Baileys (ESM) AVANT de démarrer le serveur et les sessions.
+(async () => {
+  try {
+    await loadBaileys();
+  } catch (e) {
+    console.error('[FATAL] Chargement de Baileys échoué:', e.message);
+    process.exit(1);
   }
-  autoStartSessions();
-});
+  server.listen(PORT, () => {
+    console.log(`\n🔥 Camille Core v${VERSION} (Baileys ${BAILEYS_VERSION}) → http://localhost:${PORT}`);
+    console.log(`🔑 API Key      → ${API_KEY}`);
+    console.log(`📡 Webhook n8n  → ${N8N_WEBHOOK || '(non configuré)'}`);
+    console.log(`🧩 Max sessions → ${MAX_SESSIONS}\n`);
+    if (API_KEY === 'camille-core-secret') {
+      console.warn('⚠️  SÉCURITÉ : API_KEY par défaut utilisée ! Définis la variable d\'env API_KEY en production (sinon n\'importe qui peut envoyer des messages depuis ton WhatsApp).');
+    }
+    autoStartSessions();
+  });
+})();
 
 // Sécurité : ne jamais laisser une exception non gérée tuer le process
 process.on('unhandledRejection', (reason) => {
