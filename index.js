@@ -991,11 +991,14 @@ app.post('/api/sendVideo', auth, async (req, res) => {
   let { chatId, session = 'default', file, caption = '' } = req.body;
   if (!chatId) return res.status(400).json({ error: 'chatId requis' });
   if (!file?.url) return res.json({ success: true, skipped: true, reason: 'Aucune URL vidéo configurée' });
+  // Légende acceptée à 3 endroits : caption (racine), file.caption, ou text —
+  // selon d'où vient l'appel (n8n, WAHA-compat, curl).
+  caption = caption || file.caption || req.body.text || '';
 
   try {
     const s   = getSession(session);
     const jid = toJid(chatId);
-    console.log('[sendVideo] jid:', jid, 'url:', file.url);
+    console.log('[sendVideo] jid:', jid, 'url:', file.url, caption ? `caption:"${String(caption).slice(0,60)}"` : '(sans légende)');
 
     const buffer = await fetchMediaBuffer(file.url);
     if (!buffer || buffer.length < 500) {
