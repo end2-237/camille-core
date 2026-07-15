@@ -1482,7 +1482,11 @@ app.post('/api/media/upload', auth, (req, res) => {
   try {
     const filePath = path.join(MEDIA_DIR, safe);
     fs.writeFileSync(filePath, Buffer.from(data, 'base64'));
-    const baseUrl = (process.env.CORE_PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+    // URL publique : env explicite > host de la requête (proxy Render/Coolify) > localhost.
+    const fwdProto = (req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+    const fwdHost  = (req.headers['x-forwarded-host']  || req.headers.host || '').split(',')[0].trim();
+    const fromReq  = fwdHost ? `${fwdProto || 'https'}://${fwdHost}` : '';
+    const baseUrl  = (process.env.CORE_PUBLIC_URL || fromReq || `http://localhost:${PORT}`).replace(/\/$/, '');
     const url = `${baseUrl}/media/${safe}`;
     console.log(`[media] upload → ${safe} (${mimeType || '?'})`);
     res.json({ url, filename: safe });
