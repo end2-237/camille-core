@@ -1129,16 +1129,33 @@ app.post('/api/sendAlbum', auth, (req, res) => {
   wrap(res, session, 'sendAlbum', async () => {
     const s = getSession(session);
     const jid = toJid(chatId);
-    let sent = 0;
+
+    // Télécharge d'abord les buffers valides
+    const bufs = [];
     for (const it of items.slice(0, 6)) {
       if (!it || !it.url) continue;
       try {
         const buffer = await fetchMediaBuffer(it.url);
-        if (!buffer || buffer.length < 100) continue;
-        await s.client.sendMessage(jid, { image: buffer, caption: it.caption || undefined });
-        sent++;
-        await randomDelay(250, 600); // court délai → WhatsApp regroupe en album
-      } catch (e) { console.error('[sendAlbum] item KO:', e.message); }
+        if (buffer && buffer.length > 100) bufs.push({ buffer, caption: it.caption });
+      } catch (e) { console.error('[sendAlbum] fetch KO:', e.message); }
+    }
+    if (!bufs.length) return { success: true, sent: 0 };
+
+    // 1) Message album « parent » (annonce le nombre d'images attendues)
+    const parent = await s.client.sendMessage(jid, {
+      album: { expectedImageCount: bufs.length, expectedVideoCount: 0 },
+    });
+
+    // 2) Chaque image associée à l'album → WhatsApp affiche une vraie grille
+    let sent = 0;
+    for (const b of bufs) {
+      await s.client.sendMessage(jid, {
+        image: b.buffer,
+        caption: b.caption || undefined,
+        albumParentKey: parent.key,
+      });
+      sent++;
+      await randomDelay(120, 300);
     }
     return { success: true, sent };
   });
