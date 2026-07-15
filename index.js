@@ -1119,6 +1119,31 @@ function wrap(res, session, label, fn) {
   });
 }
 
+// POST /api/sendAlbum  { chatId, session, items:[{url,caption}] }
+// Envoie plusieurs images d'affilée — WhatsApp les regroupe en album (grille).
+app.post('/api/sendAlbum', auth, (req, res) => {
+  const { chatId, session = 'default', items } = req.body;
+  if (!chatId || !Array.isArray(items) || !items.length) {
+    return res.status(400).json({ error: 'chatId et items[] requis' });
+  }
+  wrap(res, session, 'sendAlbum', async () => {
+    const s = getSession(session);
+    const jid = toJid(chatId);
+    let sent = 0;
+    for (const it of items.slice(0, 6)) {
+      if (!it || !it.url) continue;
+      try {
+        const buffer = await fetchMediaBuffer(it.url);
+        if (!buffer || buffer.length < 100) continue;
+        await s.client.sendMessage(jid, { image: buffer, caption: it.caption || undefined });
+        sent++;
+        await randomDelay(250, 600); // court délai → WhatsApp regroupe en album
+      } catch (e) { console.error('[sendAlbum] item KO:', e.message); }
+    }
+    return { success: true, sent };
+  });
+});
+
 // POST /api/sendLocation  { chatId, session, latitude, longitude, name, address }
 app.post('/api/sendLocation', auth, (req, res) => {
   const { chatId, session = 'default', latitude, longitude, name = '', address = '' } = req.body;
