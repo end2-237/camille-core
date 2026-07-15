@@ -1102,6 +1102,177 @@ app.post('/api/stopTyping', auth, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════════════════════
+// OUTILS CONVERSATIONNELS WHATSAPP — expérience riche (N1/N2/N3)
+// Construit une clé de message à partir de chatId + messageId (pour react/reply/…)
+// ══════════════════════════════════════════════════════════════════════════════
+function msgKey(chatId, messageId, fromMe) {
+  return { remoteJid: toJid(chatId), id: messageId, fromMe: !!fromMe };
+}
+function wrap(res, session, label, fn) {
+  return fn().then((r) => res.json(r || { success: true })).catch((err) => {
+    const msg = err?.message || String(err);
+    const sd = sessions.get(session);
+    if (sd?.metrics) { sd.metrics.lastError = { msg: `${label}: ${msg}`, at: Date.now() }; }
+    console.error(`[${label}]`, msg);
+    res.status(500).json({ success: false, error: msg });
+  });
+}
+
+// POST /api/sendLocation  { chatId, session, latitude, longitude, name, address }
+app.post('/api/sendLocation', auth, (req, res) => {
+  const { chatId, session = 'default', latitude, longitude, name = '', address = '' } = req.body;
+  if (!chatId || latitude == null || longitude == null) return res.status(400).json({ error: 'chatId, latitude, longitude requis' });
+  wrap(res, session, 'sendLocation', async () => {
+    const s = getSession(session);
+    await s.client.sendMessage(toJid(chatId), {
+      location: { degreesLatitude: Number(latitude), degreesLongitude: Number(longitude), name, address },
+    });
+    return { success: true };
+  });
+});
+
+// POST /api/sendPoll  { chatId, session, name, options:[], selectableCount }
+app.post('/api/sendPoll', auth, (req, res) => {
+  const { chatId, session = 'default', name, options, selectableCount = 1 } = req.body;
+  if (!chatId || !name || !Array.isArray(options) || options.length < 2) {
+    return res.status(400).json({ error: 'chatId, name et options[>=2] requis' });
+  }
+  wrap(res, session, 'sendPoll', async () => {
+    const s = getSession(session);
+    await s.client.sendMessage(toJid(chatId), {
+      poll: { name, values: options.map(String), selectableCount: Math.max(1, Number(selectableCount) || 1) },
+    });
+    return { success: true };
+  });
+});
+
+// POST /api/sendContact  { chatId, session, contactName, phone }
+app.post('/api/sendContact', auth, (req, res) => {
+  const { chatId, session = 'default', contactName, phone } = req.body;
+  if (!chatId || !contactName || !phone) return res.status(400).json({ error: 'chatId, contactName, phone requis' });
+  wrap(res, session, 'sendContact', async () => {
+    const s = getSession(session);
+    const num = String(phone).replace(/[^0-9]/g, '');
+    const vcard = 'BEGIN:VCARD\nVERSION:3.0\nFN:' + contactName + '\nTEL;type=CELL;waid=' + num + ':+' + num + '\nEND:VCARD';
+    await s.client.sendMessage(toJid(chatId), { contacts: { displayName: contactName, contacts: [{ vcard }] } });
+    return { success: true };
+  });
+});
+
+// POST /api/sendReaction  { chatId, session, messageId, emoji, fromMe }
+app.post('/api/sendReaction', auth, (req, res) => {
+  const { chatId, session = 'default', messageId, emoji = '👍', fromMe = false } = req.body;
+  if (!chatId || !messageId) return res.status(400).json({ error: 'chatId, messageId requis' });
+  wrap(res, session, 'sendReaction', async () => {
+    const s = getSession(session);
+    await s.client.sendMessage(toJid(chatId), { react: { text: emoji, key: msgKey(chatId, messageId, fromMe) } });
+    return { success: true };
+  });
+});
+
+// POST /api/sendReply  { chatId, session, text, messageId, quotedText, fromMe }
+app.post('/api/sendReply', auth, (req, res) => {
+  const { chatId, session = 'default', text, messageId, quotedText = '', fromMe = false } = req.body;
+  if (!chatId || !text || !messageId) return res.status(400).json({ error: 'chatId, text, messageId requis' });
+  wrap(res, session, 'sendReply', async () => {
+    const s = getSession(session);
+    const quoted = { key: msgKey(chatId, messageId, fromMe), message: { conversation: quotedText || '' } };
+    await s.client.sendMessage(toJid(chatId), { text }, { quoted });
+    return { success: true };
+  });
+});
+
+// POST /api/sendSticker  { chatId, session, file:{url} }
+app.post('/api/sendSticker', auth, (req, res) => {
+  const { chatId, session = 'default', file } = req.body;
+  if (!chatId || !file?.url) return res.status(400).json({ error: 'chatId et file.url requis' });
+  wrap(res, session, 'sendSticker', async () => {
+    const s = getSession(session);
+    const buffer = await fetchMediaBuffer(file.url);
+    await randomDelay(400, 1200);
+    await s.client.sendMessage(toJid(chatId), { sticker: buffer });
+    return { success: true };
+  });
+});
+
+// POST /api/sendGif  { chatId, session, file:{url}, caption }
+app.post('/api/sendGif', auth, (req, res) => {
+  let { chatId, session = 'default', file, caption = '' } = req.body;
+  if (!chatId || !file?.url) return res.status(400).json({ error: 'chatId et file.url requis' });
+  caption = caption || file.caption || '';
+  wrap(res, session, 'sendGif', async () => {
+    const s = getSession(session);
+    const buffer = await fetchMediaBuffer(file.url);
+    await randomDelay(400, 1200);
+    await s.client.sendMessage(toJid(chatId), { video: buffer, gifPlayback: true, caption: caption || undefined });
+    return { success: true };
+  });
+});
+
+// POST /api/setPresence  { chatId, session, presence }  (available|unavailable|composing|recording|paused)
+app.post('/api/setPresence', auth, (req, res) => {
+  const { chatId, session = 'default', presence = 'available' } = req.body;
+  if (!chatId) return res.status(400).json({ error: 'chatId requis' });
+  wrap(res, session, 'setPresence', async () => {
+    const s = getSession(session);
+    await s.client.sendPresenceUpdate(presence, toJid(chatId));
+    return { success: true };
+  });
+});
+
+// POST /api/markRead  { chatId, session, messageId, fromMe }
+app.post('/api/markRead', auth, (req, res) => {
+  const { chatId, session = 'default', messageId, fromMe = false } = req.body;
+  if (!chatId || !messageId) return res.status(400).json({ error: 'chatId, messageId requis' });
+  wrap(res, session, 'markRead', async () => {
+    const s = getSession(session);
+    await s.client.readMessages([msgKey(chatId, messageId, fromMe)]);
+    return { success: true };
+  });
+});
+
+// POST /api/editMessage  { chatId, session, messageId, text, fromMe }
+app.post('/api/editMessage', auth, (req, res) => {
+  const { chatId, session = 'default', messageId, text, fromMe = true } = req.body;
+  if (!chatId || !messageId || !text) return res.status(400).json({ error: 'chatId, messageId, text requis' });
+  wrap(res, session, 'editMessage', async () => {
+    const s = getSession(session);
+    await s.client.sendMessage(toJid(chatId), { text, edit: msgKey(chatId, messageId, fromMe) });
+    return { success: true };
+  });
+});
+
+// POST /api/deleteMessage  { chatId, session, messageId, fromMe }
+app.post('/api/deleteMessage', auth, (req, res) => {
+  const { chatId, session = 'default', messageId, fromMe = true } = req.body;
+  if (!chatId || !messageId) return res.status(400).json({ error: 'chatId, messageId requis' });
+  wrap(res, session, 'deleteMessage', async () => {
+    const s = getSession(session);
+    await s.client.sendMessage(toJid(chatId), { delete: msgKey(chatId, messageId, fromMe) });
+    return { success: true };
+  });
+});
+
+// POST /api/sendButtons  { chatId, session, text, footer, buttons:[{id,title}] }
+// ⚠️ BEST-EFFORT : WhatsApp restreint les boutons à l'API officielle. Peut ne pas
+// s'afficher selon l'appareil/version. Alternative fiable : sendPoll.
+app.post('/api/sendButtons', auth, (req, res) => {
+  const { chatId, session = 'default', text, footer = '', buttons } = req.body;
+  if (!chatId || !text || !Array.isArray(buttons) || !buttons.length) {
+    return res.status(400).json({ error: 'chatId, text, buttons[] requis' });
+  }
+  wrap(res, session, 'sendButtons', async () => {
+    const s = getSession(session);
+    const templateButtons = buttons.slice(0, 3).map((b, i) => ({
+      index: i + 1,
+      quickReplyButton: { displayText: b.title || ('Option ' + (i + 1)), id: b.id || ('btn_' + (i + 1)) },
+    }));
+    await s.client.sendMessage(toJid(chatId), { text, footer: footer || undefined, templateButtons });
+    return { success: true, warning: 'best-effort — les boutons peuvent ne pas s\'afficher (WhatsApp non-officiel)' };
+  });
+});
+
 // ── Server info ───────────────────────────────────────────────────────────────
 
 app.get('/api/server/info', auth, (_req, res) => {
