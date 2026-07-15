@@ -1019,6 +1019,38 @@ app.post('/api/sendVideo', auth, async (req, res) => {
   }
 });
 
+// POST /api/sendImage  { chatId, session, file: { url }, caption }
+// Envoie une VRAIE image inline (aperçu WhatsApp) avec légende — pour le catalogue N2.
+app.post('/api/sendImage', auth, async (req, res) => {
+  let { chatId, session = 'default', file, caption = '' } = req.body;
+  if (!chatId) return res.status(400).json({ error: 'chatId requis' });
+  if (!file?.url) return res.json({ success: true, skipped: true, reason: 'Aucune URL image configurée' });
+  caption = caption || file.caption || req.body.text || '';
+
+  try {
+    const s   = getSession(session);
+    const jid = toJid(chatId);
+    console.log('[sendImage] jid:', jid, 'url:', file.url, caption ? `caption:"${String(caption).slice(0,60)}"` : '(sans légende)');
+
+    const buffer = await fetchMediaBuffer(file.url);
+    if (!buffer || buffer.length < 100) {
+      throw new Error(`Image invalide ou introuvable (${buffer ? buffer.length : 0} bytes)`);
+    }
+
+    await randomDelay(500, 1500);
+    await s.client.sendMessage(jid, { image: buffer, caption: caption || undefined });
+    console.log('[sendImage] envoyé ✓');
+
+    res.json({ success: true });
+  } catch (err) {
+    const msg = err?.message || String(err);
+    const sd = sessions.get(session);
+    if (sd?.metrics) { sd.metrics.mediaErrors += 1; sd.metrics.lastError = { msg: `sendImage: ${msg}`, at: Date.now() }; }
+    console.error('[sendImage] ERREUR FINALE:', msg);
+    res.status(500).json({ success: false, error: msg });
+  }
+});
+
 // POST /api/sendFile   { chatId, session, file: { url, name }, caption }
 app.post('/api/sendFile', auth, async (req, res) => {
   let { chatId, session = 'default', file, caption = '' } = req.body;
