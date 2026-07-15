@@ -1296,6 +1296,31 @@ app.post('/api/deleteMessage', auth, (req, res) => {
   });
 });
 
+// POST /api/sendList  { chatId, session, text, footer, title, buttonText, sections:[{title, rows:[{title,description,rowId}]}] }
+// ⚠️ BEST-EFFORT : les listes interactives sont restreintes sur WhatsApp non-officiel.
+// La sélection revient comme un message normal (selectedRowId) → déclenche la suite.
+app.post('/api/sendList', auth, (req, res) => {
+  const { chatId, session = 'default', text, footer = '', title = '', buttonText = 'Voir', sections } = req.body;
+  if (!chatId || !text || !Array.isArray(sections) || !sections.length) {
+    return res.status(400).json({ error: 'chatId, text, sections[] requis' });
+  }
+  wrap(res, session, 'sendList', async () => {
+    const s = getSession(session);
+    const clean = sections.map((sec) => ({
+      title: sec.title || '',
+      rows: (sec.rows || []).slice(0, 10).map((r, i) => ({
+        title: String(r.title || ('Option ' + (i + 1))).slice(0, 24),
+        description: r.description ? String(r.description).slice(0, 72) : undefined,
+        rowId: r.rowId || r.title || ('row_' + (i + 1)),
+      })),
+    }));
+    await s.client.sendMessage(toJid(chatId), {
+      text, footer: footer || undefined, title: title || undefined, buttonText, sections: clean,
+    });
+    return { success: true, warning: 'best-effort — la liste peut ne pas s\'afficher (WhatsApp non-officiel)' };
+  });
+});
+
 // POST /api/sendButtons  { chatId, session, text, footer, buttons:[{id,title}] }
 // ⚠️ BEST-EFFORT : WhatsApp restreint les boutons à l'API officielle. Peut ne pas
 // s'afficher selon l'appareil/version. Alternative fiable : sendPoll.
