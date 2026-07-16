@@ -16,6 +16,7 @@ let fetchLatestBaileysVersion;
 let makeCacheableSignalKeyStore;
 let DisconnectReason;
 let Browsers;
+let downloadMediaMessage;
 
 async function loadBaileys() {
   const b = await import('@whiskeysockets/baileys');
@@ -25,6 +26,7 @@ async function loadBaileys() {
   makeCacheableSignalKeyStore = b.makeCacheableSignalKeyStore;
   DisconnectReason            = b.DisconnectReason;
   Browsers                    = b.Browsers;
+  downloadMediaMessage        = b.downloadMediaMessage;
 }
 
 const express  = require('express');
@@ -538,6 +540,23 @@ async function spawnClient(data) {
       const from = toLegacyId(jid);
       const t    = msgType(m);
 
+      // Image entrante : on la télécharge et on l'expose en URL publique pour n8n
+      // (recherche par image côté camille). Best-effort : n'empêche jamais le webhook.
+      let mediaUrl = '';
+      if (t === 'image') {
+        try {
+          const buf = await downloadMediaMessage(m, 'buffer', {});
+          const ext = (m.message.imageMessage?.mimetype || 'image/jpeg').split('/')[1].split(';')[0] || 'jpg';
+          const fname = `in_${name}_${m.key.id}.${ext}`.replace(/[^a-zA-Z0-9._-]/g, '_');
+          fs.writeFileSync(path.join(MEDIA_DIR, fname), buf);
+          const baseUrl = (process.env.CORE_PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+          mediaUrl = `${baseUrl}/media/${fname}`;
+          slog(`📷 image reçue → ${mediaUrl}`);
+        } catch (e) {
+          slog(`✗ download image KO: ${e.message}`);
+        }
+      }
+
       data.metrics.lastMessageAt = Date.now();
       data.metrics.messageCount += 1;
       recordAnalytics(name, from);
@@ -562,6 +581,7 @@ async function spawnClient(data) {
             fromMe:     false,
             body,
             type:       t,
+            mediaUrl,
             timestamp:  Number(m.messageTimestamp) || Math.floor(Date.now() / 1000),
             notifyName: m.pushName || '',
           },
