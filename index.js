@@ -102,6 +102,30 @@ const MAX_SESSIONS         = Number(process.env.MAX_SESSIONS)         || 2;
 // Créer le dossier media au démarrage
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
+// ── Métriques persistées (compteurs cumulés qui survivent aux redéploiements) ──
+const METRICS_FILE = path.join(SESSIONS_DIR, 'metrics.json');
+let savedMetrics = {};
+try { if (fs.existsSync(METRICS_FILE)) savedMetrics = JSON.parse(fs.readFileSync(METRICS_FILE, 'utf8')) || {}; } catch { savedMetrics = {}; }
+function saveMetrics() {
+  try {
+    const out = {};
+    sessions.forEach((d, n) => {
+      const m = d.metrics || {};
+      out[n] = { messageCount: m.messageCount || 0, webhookErrors: m.webhookErrors || 0, mediaErrors: m.mediaErrors || 0,
+                 emptyBodyCount: m.emptyBodyCount || 0, zombieKills: m.zombieKills || 0, createdAt: m.createdAt, lastMessageAt: m.lastMessageAt || null };
+    });
+    // conserve aussi les sessions non re-créées (au cas où)
+    Object.keys(savedMetrics).forEach((n) => { if (!(n in out)) out[n] = savedMetrics[n]; });
+    savedMetrics = out;
+    fs.writeFileSync(METRICS_FILE + '.tmp', JSON.stringify(out));
+    fs.renameSync(METRICS_FILE + '.tmp', METRICS_FILE);
+  } catch (e) { /* best-effort */ }
+}
+// flush périodique + à l'arrêt (redéploiement Coolify envoie SIGTERM)
+setInterval(saveMetrics, 20000);
+process.on('SIGTERM', () => { saveMetrics(); process.exit(0); });
+process.on('SIGINT', () => { saveMetrics(); process.exit(0); });
+
 // ── Analytics : journal des messages entrants (persistant) ────────────────────
 const ANALYTICS_FILE       = path.join(SESSIONS_DIR, 'analytics.jsonl');
 const ANALYTICS_RETENTION_DAYS = Number(process.env.ANALYTICS_RETENTION_DAYS) || 90;
@@ -321,6 +345,18 @@ function createSession(name) {
       lastWatchdogAt:   null,
     },
   };
+  // Ré-hydrate les compteurs cumulés persistés (survivent aux redéploiements)
+  const sm = savedMetrics[name];
+  if (sm) {
+    const m = data.metrics;
+    m.messageCount   = sm.messageCount   || 0;
+    m.webhookErrors  = sm.webhookErrors  || 0;
+    m.mediaErrors    = sm.mediaErrors    || 0;
+    m.emptyBodyCount = sm.emptyBodyCount || 0;
+    m.zombieKills    = sm.zombieKills    || 0;
+    m.createdAt      = sm.createdAt      || m.createdAt;
+    m.lastMessageAt  = sm.lastMessageAt  || null;
+  }
   sessions.set(name, data);
 
   spawnClient(data).catch(err => {
