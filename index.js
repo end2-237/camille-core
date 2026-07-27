@@ -98,7 +98,7 @@ const ZOMBIE_PROBE_AFTER_MS = Number(process.env.ZOMBIE_PROBE_AFTER_MS) || 5 * 6
 const ZOMBIE_HARD_MS        = Number(process.env.ZOMBIE_HARD_MS)        || 30 * 60_000;  // reco forcée après 30 min de silence
 // Plafond de sessions simultanées (anti-surcharge serveur). Baileys est léger,
 // mais on garde une limite stricte par sécurité (CPU/RAM du VPS).
-const MAX_SESSIONS         = Number(process.env.MAX_SESSIONS)         || 2;
+const MAX_SESSIONS         = Number(process.env.MAX_SESSIONS)         || 5;
 
 // Créer le dossier media au démarrage
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
