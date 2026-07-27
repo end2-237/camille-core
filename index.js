@@ -36,6 +36,7 @@ const QRCode   = require('qrcode');
 const axios    = require('axios');
 const path     = require('path');
 const fs        = require('fs');
+const crypto   = require('crypto');
 const pino     = require('pino');
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -206,6 +207,35 @@ const auth = (req, res, next) => {
   if (key !== API_KEY) return res.status(401).json({ error: 'Unauthorized — X-Api-Key invalide' });
   next();
 };
+
+// ── Login du tableau de bord (email + mot de passe) ───────────────────────────
+// N'affecte AUCUN appel API existant : les intégrations (n8n, Camille) continuent
+// d'utiliser X-Api-Key. Ici on vérifie simplement le couple email/mot de passe,
+// puis on renvoie la clé au dashboard pour qu'il fonctionne comme avant.
+//   DASHBOARD_EMAIL : email autorisé (seul nouvel env à ajouter)
+//   mot de passe    : API_KEY (déjà existante)
+const DASHBOARD_EMAIL = process.env.DASHBOARD_EMAIL || 'admin@camille.local';
+
+// Comparaison à temps constant (évite de révéler le secret par la durée de réponse)
+function safeEqual(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+app.post('/auth/login', (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email et mot de passe requis.' });
+  }
+  const emailOk = String(email).trim().toLowerCase() === DASHBOARD_EMAIL.trim().toLowerCase();
+  const passOk  = safeEqual(password, API_KEY);
+  if (!emailOk || !passOk) {
+    return res.status(401).json({ error: 'Identifiants invalides.' });
+  }
+  return res.json({ apiKey: API_KEY });
+});
 
 // ── Helpers JID (compatibilité n8n : on expose le format @c.us comme la v1) ───
 // Baileys utilise @s.whatsapp.net (user), @g.us (groupe), @lid (linked id).

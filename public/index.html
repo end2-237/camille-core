@@ -65,90 +65,116 @@
       z-index: 9999;
     }
 
+    /* Style "Coolify" — mise en page sobre, accent vert (au lieu du violet) */
     #login-box {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 48px 44px;
-      width: 380px;
+      width: 100%;
+      max-width: 605px;
+      padding: 0 24px;
       display: flex;
       flex-direction: column;
-      align-items: center;
-      gap: 24px;
+      align-items: stretch;
+      gap: 0;
     }
 
-    .login-logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .login-logo svg { width: 40px; height: 40px; }
-
-    .login-logo-text {
-      font-size: 24px;
-      font-weight: 700;
-      letter-spacing: -0.5px;
-    }
-    .login-logo-text span { color: var(--accent); }
-
-    .login-subtitle {
-      color: var(--muted);
-      font-size: 13px;
+    .login-title {
+      font-size: 56px;
+      font-weight: 800;
+      letter-spacing: -1.5px;
+      color: #fff;
       text-align: center;
-      margin-top: -12px;
+      margin-bottom: 56px;
+      line-height: 1.05;
     }
 
     .login-field {
       width: 100%;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 8px;
+      margin-bottom: 24px;
     }
 
     .login-field label {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: .6px;
+      font-size: 15px;
+      font-weight: 500;
+      color: #d4d4d8;
+      letter-spacing: 0;
+      text-transform: none;
     }
+    .login-field label .req { color: #eab308; margin-left: 2px; }
+
+    .login-input-wrap { position: relative; width: 100%; }
 
     .login-field input {
-      background: var(--surface2);
-      border: 1px solid var(--border2);
-      border-radius: var(--radius-sm);
+      background: #141417;
+      border: 1px solid #27272f;
+      border-radius: 8px;
       color: var(--text);
-      font-family: var(--mono);
-      font-size: 13px;
-      padding: 10px 14px;
+      font-family: var(--font);
+      font-size: 15px;
+      padding: 13px 44px 13px 14px;
       outline: none;
       width: 100%;
       transition: border-color .2s;
     }
-    .login-field input:focus { border-color: var(--accent); }
+    .login-field input:focus { border-color: #22c55e; }
 
+    .login-eye {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #a1a1aa;
+      display: flex;
+      align-items: center;
+      padding: 4px;
+    }
+    .login-eye:hover { color: #d4d4d8; }
+
+    .login-forgot {
+      font-size: 15px;
+      color: #a1a1aa;
+      text-decoration: none;
+      margin-top: -6px;
+      margin-bottom: 34px;
+      display: inline-block;
+      cursor: pointer;
+    }
+    .login-forgot:hover { color: #d4d4d8; }
+
+    /* Bouton : identique au Coolify, teinte violette remplacée par le vert */
     #login-btn {
       width: 100%;
-      background: var(--accent);
-      color: #000;
-      border: none;
-      border-radius: var(--radius-sm);
+      background: rgba(34, 197, 94, 0.14);
+      color: #fff;
+      border: 1px solid #22c55e;
+      border-radius: 8px;
       font-family: var(--font);
-      font-size: 14px;
-      font-weight: 700;
-      padding: 11px;
+      font-size: 16px;
+      font-weight: 500;
+      padding: 24px;
       cursor: pointer;
       transition: background .2s, transform .1s;
     }
-    #login-btn:hover  { background: #1db850; }
-    #login-btn:active { transform: scale(.98); }
+    #login-btn:hover  { background: rgba(34, 197, 94, 0.22); }
+    #login-btn:active { transform: scale(.99); }
+
+    .login-note {
+      font-size: 15px;
+      color: #a1a1aa;
+      text-align: center;
+      margin-top: 22px;
+    }
 
     #login-error {
-      font-size: 12px;
+      font-size: 14px;
       color: var(--red);
       text-align: center;
-      min-height: 16px;
+      min-height: 18px;
+      margin-top: 14px;
     }
 
     /* ─── APP SHELL ────────────────────────────────────────────────────────── */
@@ -1028,22 +1054,32 @@
 <!-- ─── LOGIN ─────────────────────────────────────────────────────────────── -->
 <div id="login-screen">
   <div id="login-box">
-    <div class="login-logo">
-      <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <rect width="40" height="40" rx="10" fill="#111114"/>
-        <circle cx="20" cy="20" r="13" stroke="#22c55e" stroke-width="2.5"/>
-        <circle cx="26.5" cy="13.5" r="2.5" fill="#111114"/>
-        <circle cx="20" cy="7" r="2" fill="#22c55e"/>
-        <circle cx="29.5" cy="11.2" r="2" fill="#22c55e"/>
-      </svg>
-      <div class="login-logo-text">Camille <span>Core</span></div>
-    </div>
-    <p class="login-subtitle">Entrez votre clé API pour accéder au tableau de bord</p>
+    <div class="login-title">Camille Core</div>
+
     <div class="login-field">
-      <label>API Key</label>
-      <input type="password" id="login-key-input" placeholder="camille-core-secret" autocomplete="off" />
+      <label>Email <span class="req">*</span></label>
+      <div class="login-input-wrap">
+        <input type="email" id="login-email-input" autocomplete="username" />
+      </div>
     </div>
+
+    <div class="login-field">
+      <label>Mot de passe <span class="req">*</span></label>
+      <div class="login-input-wrap">
+        <input type="password" id="login-key-input" autocomplete="current-password" />
+        <button type="button" class="login-eye" id="login-eye" onclick="togglePw()" aria-label="Afficher le mot de passe">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <a class="login-forgot" onclick="forgotPw()">Mot de passe oublié ?</a>
+
     <button id="login-btn" onclick="doLogin()">Connexion</button>
+
+    <p class="login-note">L'inscription est désactivée. Contactez l'administrateur.</p>
     <div id="login-error"></div>
   </div>
 </div>
@@ -1562,28 +1598,54 @@
   let serverInfoInterval = null;
 
   // ── Login ──────────────────────────────────────────────────────────────────
-  document.getElementById('login-key-input').addEventListener('keydown', e => {
-    if (e.key === 'Enter') doLogin();
+  ['login-email-input', 'login-key-input'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', e => {
+      if (e.key === 'Enter') doLogin();
+    });
   });
 
+  function togglePw() {
+    const input = document.getElementById('login-key-input');
+    const shown = input.type === 'text';
+    input.type = shown ? 'password' : 'text';
+    document.getElementById('login-eye').innerHTML = shown
+      ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>'
+      : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-10-8-10-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 8 10 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="2" y1="2" x2="22" y2="22"/></svg>';
+  }
+
+  function forgotPw() {
+    document.getElementById('login-error').textContent =
+      "Le mot de passe est défini par l'administrateur (variable API_KEY du serveur).";
+  }
+
   async function doLogin() {
-    const key = document.getElementById('login-key-input').value.trim();
-    if (!key) {
-      document.getElementById('login-error').textContent = 'Veuillez entrer une clé API.';
+    const email = document.getElementById('login-email-input').value.trim();
+    const password = document.getElementById('login-key-input').value.trim();
+    const errEl = document.getElementById('login-error');
+
+    if (!email || !password) {
+      errEl.textContent = 'Email et mot de passe requis.';
       return;
     }
     document.getElementById('login-btn').textContent = 'Vérification…';
-    document.getElementById('login-error').textContent = '';
+    errEl.textContent = '';
 
     try {
-      const res = await fetch('/api/server/info', { headers: { 'X-Api-Key': key } });
-      if (!res.ok) throw new Error('Clé API invalide');
-      API_KEY = key;
+      const res = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Identifiants invalides');
+
+      // Le serveur renvoie la clé API : le reste du dashboard fonctionne à l'identique.
+      API_KEY = data.apiKey;
       document.getElementById('login-screen').style.display = 'none';
       document.getElementById('app').classList.add('visible');
       initApp();
     } catch (e) {
-      document.getElementById('login-error').textContent = e.message;
+      errEl.textContent = e.message;
       document.getElementById('login-btn').textContent = 'Connexion';
     }
   }
