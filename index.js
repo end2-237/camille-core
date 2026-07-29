@@ -260,6 +260,35 @@ function toLegacyId(jid) {
   return jid; // @g.us, @lid : laissés tels quels
 }
 
+/**
+ * Résout le VRAI numéro de téléphone derrière un JID.
+ *
+ * Depuis 2025 WhatsApp adresse les contacts par LID (`123456789@lid`) : ce
+ * n'est PAS un numéro. Tel quel, un lien wa.me/<lid> ne mène nulle part et le
+ * commerçant ne peut pas rappeler son client.
+ *
+ * Deux sources, dans l'ordre de fiabilité :
+ *  1. `key.remoteJidAlt` / `key.participantAlt` — le JID téléphone fourni
+ *     directement par WhatsApp à côté du LID.
+ *  2. La table de correspondance de Baileys (`lidMapping.getPNForLID`).
+ *
+ * @returns {Promise<string|null>} JID au format `<numero>@s.whatsapp.net`
+ */
+async function resolvePhoneJid(sock, m) {
+  const jid = m?.key?.remoteJid || '';
+  if (!jid.endsWith('@lid')) return null; // deja un vrai numero
+
+  const alt = m?.key?.remoteJidAlt || m?.key?.participantAlt || '';
+  if (alt && alt.endsWith('@s.whatsapp.net')) return alt;
+
+  try {
+    const pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(jid);
+    if (pn && String(pn).endsWith('@s.whatsapp.net')) return String(pn);
+  } catch { /* correspondance inconnue : on gardera le LID */ }
+
+  return null;
+}
+
 // Extrait la position d'un message Baileys (partage ponctuel ou position live).
 // Baileys nomme les champs degreesLatitude / degreesLongitude ; sans cette
 // extraction le webhook ne transmet aucune coordonnée (body vide + type seul).
@@ -624,7 +653,13 @@ async function spawnClient(data) {
       }
 
       const body = extractBody(m);
+      // `from` reste l'adresse de conversation (c'est elle qui sert à répondre),
+      // mais on expose en plus le vrai numéro pour que le commerçant puisse
+      // rappeler son client depuis le dashboard ou l'app.
+      const phoneJid = await resolvePhoneJid(sock, m);
       const from = toLegacyId(jid);
+      const contactPhone = (phoneJid ? toLegacyId(phoneJid) : from).replace(/@(c\.us|lid|s\.whatsapp\.net)$/, '');
+      if (phoneJid) slog(`☎ LID resolu: ${jid} -> ${contactPhone}`);
       const t    = msgType(m);
       const location = extractLocation(m);
       if (location) slog(`📍 position reçue: ${location.latitude},${location.longitude}${location.live ? ' (live)' : ''}`);
@@ -675,6 +710,8 @@ async function spawnClient(data) {
             notifyName: m.pushName || '',
             // null pour tout message qui n'est pas un partage de position
             location,
+            // Vrai numéro derrière un LID (= `from` nettoyé si déjà un numéro)
+            contactPhone,
           },
         }, name)
         .then(() => {
