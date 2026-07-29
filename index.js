@@ -260,6 +260,27 @@ function toLegacyId(jid) {
   return jid; // @g.us, @lid : laissés tels quels
 }
 
+// Extrait la position d'un message Baileys (partage ponctuel ou position live).
+// Baileys nomme les champs degreesLatitude / degreesLongitude ; sans cette
+// extraction le webhook ne transmet aucune coordonnée (body vide + type seul).
+function extractLocation(m) {
+  const msg = m.message || {};
+  const lm = msg.locationMessage || msg.liveLocationMessage;
+  if (!lm) return null;
+  const lat = Number(lm.degreesLatitude);
+  const lng = Number(lm.degreesLongitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat === 0 && lng === 0) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return {
+    latitude:  lat,
+    longitude: lng,
+    name:      lm.name    || '',
+    address:   lm.address || '',
+    live:      !!msg.liveLocationMessage,
+  };
+}
+
 // Extrait le texte d'un message Baileys
 function extractBody(m) {
   const msg = m.message || {};
@@ -281,7 +302,7 @@ function msgType(m) {
   if (msg.audioMessage)    return msg.audioMessage.ptt ? 'ptt' : 'audio';
   if (msg.documentMessage) return 'document';
   if (msg.stickerMessage)  return 'sticker';
-  if (msg.locationMessage) return 'location';
+  if (msg.locationMessage || msg.liveLocationMessage) return 'location';
   if (msg.contactMessage)  return 'vcard';
   return 'unknown';
 }
@@ -605,6 +626,8 @@ async function spawnClient(data) {
       const body = extractBody(m);
       const from = toLegacyId(jid);
       const t    = msgType(m);
+      const location = extractLocation(m);
+      if (location) slog(`📍 position reçue: ${location.latitude},${location.longitude}${location.live ? ' (live)' : ''}`);
 
       // Image entrante : on la télécharge et on l'expose en URL publique pour n8n
       // (recherche par image côté camille). Best-effort : n'empêche jamais le webhook.
@@ -650,6 +673,8 @@ async function spawnClient(data) {
             mediaUrl,
             timestamp:  Number(m.messageTimestamp) || Math.floor(Date.now() / 1000),
             notifyName: m.pushName || '',
+            // null pour tout message qui n'est pas un partage de position
+            location,
           },
         }, name)
         .then(() => {
