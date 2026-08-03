@@ -100,6 +100,60 @@ const ZOMBIE_HARD_MS        = Number(process.env.ZOMBIE_HARD_MS)        || 30 * 
 // mais on garde une limite stricte par sécurité (CPU/RAM du VPS).
 const MAX_SESSIONS         = Number(process.env.MAX_SESSIONS)         || 5;
 
+// ── Alerte du vendeur quand une session tombe ────────────────────────────────
+// Camille-core sait le premier qu'un agent est débranché, mais il ne le disait
+// à personne : le vendeur découvrait la panne quand un client se plaignait.
+//
+// On ne signale pas la moindre coupure : Baileys se reconnecte seul en quelques
+// secondes, et prévenir à chaque fois reviendrait à apprendre au vendeur à
+// ignorer ses alertes. On attend donc que la panne dure — sauf pour une
+// authentification perdue, qui ne se répare jamais toute seule.
+// Valeur par defaut = la production, par symetrie avec camille qui pointe deja
+// camille-core en dur. Une variable oubliee au deploiement eteindrait les
+// alertes sans que personne ne s'en apercoive.
+const CAMILLE_URL = (process.env.CAMILLE_URL || 'https://camille.vps.buyticle.com').replace(/\/$/, '');
+const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS) || 3 * 60_000;
+const pendingStateReports = new Map(); // name → timeout
+
+async function postSessionState(name, status, reason) {
+  if (!CAMILLE_URL) return; // non configuré : on n'alerte pas, on ne casse rien
+  try {
+    await axios.post(
+      `${CAMILLE_URL}/api/waha/session-event`,
+      { session: name, status, reason: reason || '' },
+      { headers: { 'x-api-key': API_KEY }, timeout: 10_000 }
+    );
+  } catch (e) {
+    debugLog(`[${name}] alerte état non transmise: ${e.message}`);
+  }
+}
+
+/**
+ * Signale l'état d'une session à camille, avec temporisation.
+ * CONNECTED et AUTH_FAILURE partent tout de suite ; une simple déconnexion
+ * n'est signalée que si elle dure encore après DISCONNECT_GRACE_MS.
+ */
+function reportSessionState(name, status, reason) {
+  const pending = pendingStateReports.get(name);
+  if (pending) { clearTimeout(pending); pendingStateReports.delete(name); }
+
+  if (status === 'DISCONNECTED') {
+    const t = setTimeout(() => {
+      pendingStateReports.delete(name);
+      // Toujours à terre ? Alors seulement c'est une nouvelle.
+      if (sessions.get(name)?.status !== 'CONNECTED') {
+        postSessionState(name, 'DISCONNECTED', reason);
+      }
+    }, DISCONNECT_GRACE_MS);
+    // Ne pas retenir le process pour une alerte en attente.
+    if (typeof t.unref === 'function') t.unref();
+    pendingStateReports.set(name, t);
+    return;
+  }
+
+  postSessionState(name, status, reason);
+}
+
 // Créer le dossier media au démarrage
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
@@ -566,6 +620,7 @@ async function spawnClient(data) {
         data.phone = id.split(':')[0].split('@')[0] || null;
       } catch { data.phone = null; }
       io.emit('session:update', { name, status: data.status });
+      reportSessionState(name, 'CONNECTED');
       console.log(`[${name}] ✅ Connecté et prêt${data.phone ? ' — ' + data.phone : ''}`);
     }
 
@@ -598,6 +653,8 @@ async function spawnClient(data) {
         setStatus('AUTH_FAILURE');
         data.metrics.lastError = { msg: `auth failure (${code}) registration incomplète — re-couplage`, at: Date.now() };
         io.emit('session:update', { name, status: data.status });
+        // Une authentification perdue ne se répare pas seule : il faut rescanner.
+        reportSessionState(name, 'AUTH_FAILURE', `auth failure ${code}`);
         console.warn(`[${name}] ❌ Auth failure code=${code} registered=false — creds provisoires effacés, re-couplage`);
         try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
         scheduleReconnect(name, `auth failure ${code} (non enregistré) → nouveau couplage`, { immediate: true });
@@ -609,6 +666,7 @@ async function spawnClient(data) {
         setStatus('DISCONNECTED');
         data.metrics.lastError = { msg: `401 sur session enregistrée — reconnexion sans effacer creds`, at: Date.now() };
         io.emit('session:update', { name, status: data.status });
+        reportSessionState(name, 'DISCONNECTED', `401 sur session enregistrée`);
         console.warn(`[${name}] ⚠️  401 (registered=true) — conflit probable, reconnexion SANS effacer les creds`);
         scheduleReconnect(name, `401 enregistré (conflit probable)`);
       } else if (isRestart) {
@@ -618,6 +676,8 @@ async function spawnClient(data) {
       } else {
         setStatus('DISCONNECTED');
         io.emit('session:update', { name, status: data.status });
+        // Le restart (515) est routinier et se règle seul : on ne le signale pas.
+        reportSessionState(name, 'DISCONNECTED', `close code ${code}`);
         console.log(`[${name}] 🔌 Déconnecté (code ${code}${isConflict ? ' conflict' : ''}) — reconnexion programmée`);
         scheduleReconnect(name, `close code ${code}`);
       }
