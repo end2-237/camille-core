@@ -20,6 +20,13 @@ services:
       - SESSIONS_DIR=/app/sessions
       - CORE_PUBLIC_URL=${CORE_PUBLIC_URL:-}
       - MAX_SESSIONS=${MAX_SESSIONS:-2}
+      # Alerte du vendeur quand une session tombe. L'envoi est best-effort :
+      # une panne de camille n'affecte jamais les sessions WhatsApp en cours.
+      - CAMILLE_URL=${CAMILLE_URL:-https://camille.vps.buyticle.com}
+      # Duree pendant laquelle une coupure doit persister avant d'alerter.
+      # Baileys se reconnecte seul en quelques secondes : prevenir a chaque
+      # micro-coupure apprendrait au vendeur a ignorer ses alertes.
+      - DISCONNECT_GRACE_MS=${DISCONNECT_GRACE_MS:-180000}
 
 volumes:
   sessions-data:
