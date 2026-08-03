@@ -441,6 +441,145 @@ async function postWebhookWithRetry(url, payload, name) {
   throw lastErr;
 }
 
+// ── « Vous êtes où ? » → épingle de la boutique ───────────────────────────────
+// Le client qui demande l'adresse recevait une phrase ; il lui restait à la
+// recopier dans Maps. L'épingle WhatsApp ouvre l'itinéraire d'un tap.
+//
+// La détection est ici, sur le message entrant, et non dans le workflow : elle
+// vaut donc à tous les niveaux d'agent et dans toutes les branches de
+// conversation, y compris pendant une prise de commande. Le message part
+// quand même vers n8n — le modèle répond son texte, l'épingle vient en plus.
+
+// Un message peut demander l'adresse de la boutique de mille façons ; il ne
+// doit pas la déclencher en demandant où en est SA commande.
+//
+// \b est inutilisable ici : JavaScript le calcule sur l'ASCII seul, donc il ne
+// voit aucune frontière autour de « où » ou de « êtes » et le motif ne colle
+// jamais. On délimite donc explicitement, accents compris.
+const LTR = '[a-zà-öø-ÿ]';
+const NB  = `(?<!${LTR})`;           // rien d'alphabétique avant
+const NA  = `(?!${LTR})`;            // rien d'alphabétique après
+const mot = (alt) => `${NB}(?:${alt})${NA}`;
+const OU  = mot('o[uù]');
+const rx  = (src) => new RegExp(src, 'i');
+
+const LOCATION_INTENT = [
+  // « où êtes-vous », « où est la boutique », « c'est où »
+  rx(`${OU}[^?.!]{0,30}${mot("[êe]tes|est|es|se\\s+trouve|situ[ée]e?s?|localis[ée]e?s?|bas[ée]e?s?")}`),
+  rx(`${mot("vous\\s+[êe]tes|tu\\s+es|c'?est|[çc]a\\s+se\\s+trouve|on\\s+vous\\s+trouve")}[^?.!]{0,20}${OU}`),
+  rx(`${OU}[^?.!]{0,30}${mot("boutique|magasin|shop|local|bureau|si[èe]ge|atelier|agence|entrep[oô]t")}`),
+  // demande directe
+  rx(mot("localisation|g[ée]olocalisation|position\\s+exacte|coordonn[ée]es\\s+gps|itin[ée]raire|plan\\s+d'?acc[èe]s")),
+  // « l'adresse » n'a pas d'espace après l'apostrophe : ce cas ne peut pas
+  // passer par mot(), dont la frontière de fin interdit une lettre juste après.
+  rx(`(?:${mot("votre|vot'?|ton|ta|la")}\\s+|${NB}l'\\s*)${mot('adresse')}`),
+  rx(mot('google\\s*maps?|gps')),
+  rx(`${mot('comment')}[^?.!]{0,30}${mot("venir|arriver|vous\\s+trouver|te\\s+trouver|acc[ée]der|rejoindre|passer")}`),
+  // anglais
+  rx(`${mot('where')}[^?.!]{0,30}${mot("are\\s+you|is\\s+(?:your|the)\\s+(?:shop|store|office|place)|can\\s+i\\s+find")}`),
+  rx(`${mot('your')}\\s+${mot('address|location')}`),
+  rx(mot("how\\s+(?:do|can)\\s+i\\s+(?:get|come|reach)")),
+  rx(mot('directions?')),
+  // pidgin
+  rx(mot("wusai|which\\s+side|na\\s+where|una\\s+dey\\s+where")),
+];
+
+// Ce qui ressemble à la question sans en être une. « Où est ma commande » et
+// « votre adresse mail » tombaient tous les deux dans les motifs ci-dessus.
+const NOT_SHOP_LOCATION = rx([
+  mot("ma|mon|mes|my|the") + "\\s+" + mot("commande|colis|livraison|paquet|order|parcel|package|delivery"),
+  `${OU}\\s+${mot('en')}\\s+${mot('est')}`,
+  mot("where\\s+is\\s+my"),
+  `${mot('adresse')}\\s+${mot("mail|e-?mail|[ée]lectronique")}`,
+  `${mot('adresse')}\\s+${mot('de')}\\s+${mot('livraison')}`,
+  mot('livreur'),
+].join('|'));
+
+function wantsShopLocation(text) {
+  const t = String(text || '').trim();
+  if (t.length < 3 || t.length > 400) return false;
+  if (NOT_SHOP_LOCATION.test(t)) return false;
+  return LOCATION_INTENT.some((re) => re.test(t));
+}
+
+// Coordonnées de l'agent, lues chez camille (by-session les expose déjà).
+// Cache court : le commerçant qui corrige la position de sa boutique n'a pas à
+// attendre un redémarrage, et une rafale de messages n'interroge pas camille
+// à chaque ligne.
+const AGENT_GEO_TTL_MS = 5 * 60_000;
+const agentGeoCache = new Map(); // session → { at, geo }
+
+async function fetchAgentGeo(session) {
+  const hit = agentGeoCache.get(session);
+  if (hit && Date.now() - hit.at < AGENT_GEO_TTL_MS) return hit.geo;
+  let geo = null;
+  try {
+    const r = await axios.get(`${CAMILLE_URL}/api/agents/by-session`, {
+      params: { session },
+      timeout: 8000,
+    });
+    const a = (r.data && r.data.agent) || {};
+    if (a.latitude != null && a.longitude != null) {
+      geo = {
+        latitude:  Number(a.latitude),
+        longitude: Number(a.longitude),
+        name:      a.business_name || a.name || '',
+        address:   a.location || '',
+      };
+    }
+  } catch (e) {
+    debugLog(`[${session}] géo agent non résolue: ${e.message}`);
+  }
+  // Un échec est mis en cache lui aussi, mais brièvement : sans ça, une panne
+  // de camille ferait interroger le réseau à chaque message entrant.
+  agentGeoCache.set(session, { at: geo ? Date.now() : Date.now() - AGENT_GEO_TTL_MS + 30_000, geo });
+  return geo;
+}
+
+// Anti-répétition : dans un échange où l'on reparle du chemin plusieurs fois,
+// renvoyer l'épingle à chaque phrase ressemble à un bug.
+const LOCATION_COOLDOWN_MS = Number(process.env.LOCATION_COOLDOWN_MS) || 10 * 60_000;
+// L'épingle est retardée pour arriver APRÈS la réponse écrite du modèle : elle
+// illustre la phrase, elle ne la précède pas.
+const LOCATION_DELAY_MS = Number(process.env.LOCATION_DELAY_MS) || 6000;
+const lastLocationSent = new Map(); // `session|jid` → timestamp
+
+async function maybeSendShopLocation(session, jid, body) {
+  if (!wantsShopLocation(body)) return;
+
+  const key = `${session}|${jid}`;
+  const now = Date.now();
+  if (now - (lastLocationSent.get(key) || 0) < LOCATION_COOLDOWN_MS) return;
+
+  const geo = await fetchAgentGeo(session);
+  if (!geo) return; // boutique sans coordonnées : le texte du modèle suffit
+
+  // Réservé avant l'attente : deux messages rapprochés ne doivent pas produire
+  // deux épingles pendant que la première patiente.
+  lastLocationSent.set(key, now);
+  if (lastLocationSent.size > 2000) {
+    lastLocationSent.delete(lastLocationSent.keys().next().value);
+  }
+
+  try {
+    await new Promise((r) => setTimeout(r, LOCATION_DELAY_MS));
+    const s = getSession(session); // relit l'état : la session a pu tomber
+    await s.client.sendMessage(toJid(jid), {
+      location: {
+        degreesLatitude:  geo.latitude,
+        degreesLongitude: geo.longitude,
+        name:             geo.name,
+        address:          geo.address,
+      },
+    });
+    debugLog(`[${session}] 📍 épingle boutique envoyée à ${jid}`);
+  } catch (e) {
+    // L'épingle est un bonus : son échec ne doit jamais peser sur la réponse.
+    lastLocationSent.delete(key);
+    debugLog(`[${session}] épingle boutique non envoyée: ${e.message}`);
+  }
+}
+
 // ── Session Manager ───────────────────────────────────────────────────────────
 //  Chaque "session" = 1 numéro WhatsApp = 1 socket Baileys
 //  sessions Map : name → { name, status, client(sock), ... }
@@ -749,6 +888,11 @@ async function spawnClient(data) {
       if ((!body || body.trim() === '') && t === 'chat') {
         data.metrics.emptyBodyCount += 1;
       }
+
+      // Demande d'adresse → l'épingle part en parallèle du webhook. Volontairement
+      // pas attendu : la réponse du modèle ne doit pas patienter derrière un
+      // appel à camille ni derrière la temporisation de l'épingle.
+      if (body) maybeSendShopLocation(name, jid, body).catch(() => {});
 
       const webhookUrl = webhookConfig.sessions[name]
         || process.env[`N8N_WEBHOOK_${name.toUpperCase()}`]
