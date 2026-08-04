@@ -115,12 +115,12 @@ const CAMILLE_URL = (process.env.CAMILLE_URL || 'https://camille.vps.buyticle.co
 const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS) || 3 * 60_000;
 const pendingStateReports = new Map(); // name → timeout
 
-async function postSessionState(name, status, reason) {
+async function postSessionState(name, status, reason, extra) {
   if (!CAMILLE_URL) return; // non configuré : on n'alerte pas, on ne casse rien
   try {
     await axios.post(
       `${CAMILLE_URL}/api/waha/session-event`,
-      { session: name, status, reason: reason || '' },
+      { session: name, status, reason: reason || '', ...(extra || {}) },
       { headers: { 'x-api-key': API_KEY }, timeout: 10_000 }
     );
   } catch (e) {
@@ -657,6 +657,13 @@ async function filetDeSecurite(session, jid) {
     const s = getSession(session);
     await s.client.sendMessage(toJid(jid), { text: FILET_TEXTE });
     slog(`[${session}] 🪢 filet de sécurité envoyé à ${jid}`);
+    // Le vendeur doit savoir QUI attend, pas seulement que « ça ne marche
+    // plus » : c'est le numéro qui lui permet de reprendre la vente à la main.
+    // La cadence est celle du filet lui-même — un client, une alerte, par
+    // fenêtre — donc une panne longue ne produit pas une avalanche.
+    postSessionState(session, 'WEBHOOK_FALLBACK', '', {
+      contact: String(jid || '').replace(/@(c\.us|lid|s\.whatsapp\.net)$/, ''),
+    });
   } catch (e) {
     debugLog(`[${session}] filet de sécurité impossible: ${e.message}`);
   }
