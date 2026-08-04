@@ -377,6 +377,47 @@ function extractBody(m) {
     || '';
 }
 
+/**
+ * Message cité quand le client répond à un message précédent.
+ *
+ * Sans lui, un client qui répond à la photo d'un produit en écrivant « c'est
+ * combien ? » envoyait trois mots sans aucun contexte : l'agent ne pouvait pas
+ * savoir de quel produit on parlait, et redemandait. C'est une des frictions
+ * les plus visibles, et l'information était là depuis le début — elle n'était
+ * simplement jamais transmise.
+ *
+ * `text` reprend la légende de l'image ou le texte cité, c'est-à-dire ce que
+ * l'agent avait lui-même écrit : de quoi retrouver le produit.
+ */
+function extractQuoted(m) {
+  const msg = m.message || {};
+  const ctx = msg.extendedTextMessage?.contextInfo
+    || msg.imageMessage?.contextInfo
+    || msg.videoMessage?.contextInfo
+    || msg.stickerMessage?.contextInfo
+    || msg.audioMessage?.contextInfo
+    || msg.documentMessage?.contextInfo
+    || null;
+
+  const q = ctx?.quotedMessage;
+  if (!q) return null;
+
+  const text = q.conversation
+    || q.extendedTextMessage?.text
+    || q.imageMessage?.caption
+    || q.videoMessage?.caption
+    || q.documentMessage?.caption
+    || '';
+
+  return {
+    id:      ctx.stanzaId || '',
+    // fromMe côté cité : savoir si le client répond à NOTRE message ou au sien.
+    fromMe:  Boolean(ctx.participant && m.key?.remoteJid && ctx.participant !== m.key.remoteJid) || false,
+    type:    q.imageMessage ? 'image' : q.videoMessage ? 'video' : q.audioMessage ? 'audio' : 'chat',
+    text:    String(text || '').slice(0, 1000),
+  };
+}
+
 function msgType(m) {
   const msg = m.message || {};
   if (msg.conversation || msg.extendedTextMessage) return 'chat';
@@ -852,6 +893,10 @@ async function spawnClient(data) {
       }
 
       const body = extractBody(m);
+      // Message cité : le client qui répond à la photo d'un produit ne réécrit
+      // pas son nom. Sans ce contexte, l'agent redemande de quoi on parle.
+      const quoted = extractQuoted(m);
+      if (quoted) slog(`↩ réponse à un message cité : "${quoted.text.slice(0, 40)}"`);
       // `from` reste l'adresse de conversation (c'est elle qui sert à répondre),
       // mais on expose en plus le vrai numéro pour que le commerçant puisse
       // rappeler son client depuis le dashboard ou l'app.
@@ -916,6 +961,8 @@ async function spawnClient(data) {
             location,
             // Vrai numéro derrière un LID (= `from` nettoyé si déjà un numéro)
             contactPhone,
+            // null quand le message ne cite rien
+            quoted,
           },
         }, name)
         .then(() => {
