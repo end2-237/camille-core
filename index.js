@@ -100,6 +100,33 @@ const ZOMBIE_HARD_MS        = Number(process.env.ZOMBIE_HARD_MS)        || 30 * 
 // mais on garde une limite stricte par sécurité (CPU/RAM du VPS).
 const MAX_SESSIONS         = Number(process.env.MAX_SESSIONS)         || 5;
 
+// ── Version du client WhatsApp Web annoncée au serveur ───────────────────────
+//
+// On appelait fetchLatestBaileysVersion() à chaque ouverture de socket. Cette
+// fonction ne lit PAS la version de la bibliothèque installée : elle télécharge
+// src/Defaults/index.ts sur la branche master de Baileys et en extrait le
+// numéro. On annonçait donc à WhatsApp une version du protocole implémentée par
+// master, avec une bibliothèque figée à la rc13 de mai.
+//
+// Conséquence : le jour où l'équipe Baileys avance master, la production change
+// de comportement sans qu'une seule ligne n'ait bougé chez nous, et sans
+// redéploiement. C'est intenable pour un service en production.
+//
+// Par défaut on annonce donc la version embarquée dans la bibliothèque qu'on a
+// réellement installée (version: undefined => Baileys prend la sienne).
+// WA_VERSION="2.3000.1043857760" force un numéro précis si WhatsApp finit par
+// refuser celui-là, et WA_VERSION_SUIVRE_MASTER=1 restaure l'ancien comportement.
+const WA_VERSION = String(process.env.WA_VERSION || '')
+  .split('.').map((n) => Number(n.trim())).filter(Number.isFinite);
+const WA_VERSION_SUIVRE_MASTER = process.env.WA_VERSION_SUIVRE_MASTER === '1';
+
+// ── Fenêtre de conflit ───────────────────────────────────────────────────────
+// Un « Stream Errored (conflict) » est presque toujours suivi, une à deux
+// secondes plus tard, d'un 401 « Connection Failure » qui ne porte plus le mot
+// conflict. C'est le même incident. Sans cette fenêtre, le second 401 est pris
+// pour une authentification perdue.
+const CONFLIT_FENETRE_MS = Number(process.env.CONFLIT_FENETRE_MS) || 120_000;
+
 // ── Alerte du vendeur quand une session tombe ────────────────────────────────
 // Camille-core sait le premier qu'un agent est débranché, mais il ne le disait
 // à personne : le vendeur découvrait la panne quand un client se plaignait.
@@ -696,6 +723,35 @@ function noterSuccesWebhook(session) {
 
 const sessions = new Map();
 
+// ── « Cette session a-t-elle déjà fonctionné ? » ─────────────────────────────
+//
+// On se fiait à creds.registered pour décider si un 401 valait la peine
+// d'effacer le couplage. Ce drapeau ment : après un couplage par code il reste
+// à false alors que la session tourne — elle déchiffre, résout les LID et
+// livre ses webhooks pendant des heures avec registered=false dans les logs.
+//
+// On garde donc notre propre preuve : un fichier posé à la première connexion
+// réussie. Il vit dans le dossier d'auth, donc un reset manuel l'efface avec
+// le reste — c'est voulu.
+function marqueurOuvert(name) {
+  return path.join(SESSIONS_DIR, `session-${name}`, '.camille-deja-ouvert');
+}
+function aDejaOuvert(name) {
+  try {
+    if (fs.existsSync(marqueurOuvert(name))) return true;
+    // Filet pour les sessions couplées AVANT l'ajout du marqueur : Baileys
+    // n'écrit `me` dans creds.json qu'une fois le compte réellement associé.
+    // Sa présence prouve un couplage abouti, quoi que dise `registered`.
+    const creds = path.join(SESSIONS_DIR, `session-${name}`, 'creds.json');
+    if (!fs.existsSync(creds)) return false;
+    const c = JSON.parse(fs.readFileSync(creds, 'utf8'));
+    return !!(c && c.me && c.me.id);
+  } catch { return false; }
+}
+function noterOuverture(name) {
+  try { fs.writeFileSync(marqueurOuvert(name), new Date().toISOString()); } catch {}
+}
+
 function createSession(name) {
   if (sessions.has(name)) return sessions.get(name);
 
@@ -764,11 +820,15 @@ async function spawnClient(data) {
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
   data.saveCreds = saveCreds;
 
-  let version;
-  try {
-    ({ version } = await fetchLatestBaileysVersion());
-  } catch (e) {
-    console.warn(`[${name}] fetchLatestBaileysVersion KO (${e.message}) — version par défaut`);
+  // Voir le commentaire de WA_VERSION : par défaut on laisse Baileys annoncer
+  // SA version, celle qu'il sait effectivement parler.
+  let version = WA_VERSION.length === 3 ? WA_VERSION : undefined;
+  if (!version && WA_VERSION_SUIVRE_MASTER) {
+    try {
+      ({ version } = await fetchLatestBaileysVersion());
+    } catch (e) {
+      console.warn(`[${name}] fetchLatestBaileysVersion KO (${e.message}) — version par défaut`);
+    }
   }
 
   const sock = makeWASocket({
@@ -855,8 +915,11 @@ async function spawnClient(data) {
       // NB : on ne touche JAMAIS à creds.registered. Si la registration n'a pas
       // fini (init queries lentes), Baileys la finalise tout seul une fois la
       // connexion stable. On se contente de logger l'état pour diagnostic.
-      slog(`OPEN registered=${sock.authState?.creds?.registered}`);
+      slog(`OPEN registered=${sock.authState?.creds?.registered} wa=${(version || []).join('.') || 'défaut'}`);
       await saveCreds();
+      // La connexion a abouti : à partir d'ici, un 401 ne doit plus jamais
+      // faire effacer ce couplage automatiquement.
+      noterOuverture(name);
       setStatus('CONNECTED');
       data.metrics.lastStreamAt = Date.now();  // repart à neuf : pas de faux zombie juste après reconnexion
       data.qrBase64 = null;
@@ -895,29 +958,46 @@ async function spawnClient(data) {
       const isRestart  = code === DisconnectReason.restartRequired;
 
       const isUnauthorized = code === 401 || code === DisconnectReason.loggedOut;
-      const wasRegistered  = sock.authState?.creds?.registered;
-      if (isUnauthorized && !isConflict && !wasRegistered) {
-        // 401 + registered=false = enregistrement JAMAIS terminé → les creds sont
-        // provisoires et inutilisables. On les efface et on re-couple proprement.
+
+      // Un conflit ne se présente proprement qu'une fois. Le 401 qui suit une
+      // seconde plus tard s'annonce « Connection Failure », sans le mot
+      // conflict : c'est pourtant le même incident, et le prendre pour une
+      // authentification perdue coûte le couplage.
+      if (isConflict) data.dernierConflitAt = Date.now();
+      const conflitRecent = data.dernierConflitAt
+        && (Date.now() - data.dernierConflitAt) < CONFLIT_FENETRE_MS;
+
+      // La seule question qui compte : cette session a-t-elle déjà fonctionné ?
+      // Si oui, ses identifiants sont bons et un 401 est un incident réseau ou
+      // un conflit — jamais une raison d'effacer le couplage. creds.registered
+      // ne répond pas à cette question (il reste faux après un couplage par
+      // code) : on s'appuie sur notre propre marqueur, et sur le fait d'avoir
+      // déjà reçu des messages.
+      const dejaFonctionne = aDejaOuvert(name) || data.metrics.messageCount > 0;
+
+      if (isUnauthorized && !isConflict && !conflitRecent && !dejaFonctionne) {
+        // Jamais ouverte, jamais reçu un message : les identifiants sont des
+        // brouillons de couplage inutilisables. Là seulement on repart de zéro.
         setStatus('AUTH_FAILURE');
-        data.metrics.lastError = { msg: `auth failure (${code}) registration incomplète — re-couplage`, at: Date.now() };
+        data.metrics.lastError = { msg: `auth failure (${code}) couplage jamais abouti — re-couplage`, at: Date.now() };
         io.emit('session:update', { name, status: data.status });
-        // Une authentification perdue ne se répare pas seule : il faut rescanner.
         reportSessionState(name, 'AUTH_FAILURE', `auth failure ${code}`);
-        console.warn(`[${name}] ❌ Auth failure code=${code} registered=false — creds provisoires effacés, re-couplage`);
+        console.warn(`[${name}] ❌ Auth failure code=${code} — session jamais ouverte, creds effacés, re-couplage`);
         try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
-        scheduleReconnect(name, `auth failure ${code} (non enregistré) → nouveau couplage`, { immediate: true });
-      } else if (isUnauthorized && !isConflict && wasRegistered) {
-        // 401 sur une session DÉJÀ enregistrée : probablement un conflit auto-infligé
-        // (2 sockets) byte-identique à un vrai logout. On NE supprime PAS les creds
-        // (sinon boucle de re-couplage infinie #2110/#2248). On reconnecte avec les
-        // mêmes creds ; si c'est un vrai logout, le couplage WhatsApp restera invalide.
+        scheduleReconnect(name, `auth failure ${code} (couplage jamais abouti) → nouveau couplage`, { immediate: true });
+      } else if (isUnauthorized) {
+        // Session qui a déjà tourné : on reconnecte avec les MÊMES identifiants.
+        // Si c'est un vrai « supprimer l'appareil » côté téléphone, WhatsApp
+        // refusera durablement et le vendeur rescannera depuis le dashboard —
+        // ce qui reste infiniment préférable à un couplage détruit par erreur
+        // sur un incident passager.
+        const cause = conflitRecent ? 'conflit' : 'inconnue';
         setStatus('DISCONNECTED');
-        data.metrics.lastError = { msg: `401 sur session enregistrée — reconnexion sans effacer creds`, at: Date.now() };
+        data.metrics.lastError = { msg: `401 sur session déjà ouverte (${cause}) — reconnexion sans effacer les creds`, at: Date.now() };
         io.emit('session:update', { name, status: data.status });
-        reportSessionState(name, 'DISCONNECTED', `401 sur session enregistrée`);
-        console.warn(`[${name}] ⚠️  401 (registered=true) — conflit probable, reconnexion SANS effacer les creds`);
-        scheduleReconnect(name, `401 enregistré (conflit probable)`);
+        reportSessionState(name, 'DISCONNECTED', `401 sur session déjà ouverte (${cause})`);
+        console.warn(`[${name}] ⚠️  401 sur session déjà ouverte (${cause}) — reconnexion SANS effacer les creds`);
+        scheduleReconnect(name, `401 sur session déjà ouverte (${cause})`);
       } else if (isRestart) {
         setStatus('DISCONNECTED');
         console.log(`[${name}] 🔁 Restart required (515) — reconnexion immédiate`);
