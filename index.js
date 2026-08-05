@@ -948,6 +948,13 @@ async function spawnClient(data) {
       // Libérer la garde AVANT de reprogrammer (sinon scheduleReconnect refuse)
       data.reconnecting = false;
 
+      // Veille : une chute isolée ne dit rien, plusieurs chutes rapprochées sur
+      // des comptes différents disent que le problème n'est chez aucun vendeur.
+      noterChute(name, code);
+      etatPlateforme()
+        .then((etat) => annoncerIncidentPlateforme(etat))
+        .catch(() => {});
+
       // Un "conflict"/"replaced" = deux connexions concurrentes (autre appareil
       // OU deuxième socket/container). Ce n'est PAS un logout : il ne faut SURTOUT
       // pas effacer les creds (sinon on perd le couplage et il faut re-scanner).
@@ -1376,6 +1383,192 @@ async function fetchMediaBuffer(url) {
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  VEILLE PLATEFORME
+//
+//  WhatsApp change son protocole sans prévenir personne, et une bibliothèque
+//  non officielle met quelques jours à suivre. Entre les deux, le vendeur voit
+//  son agent tomber et ne comprend pas pourquoi — il croit que c'est son
+//  téléphone, ou nous.
+//
+//  Ce module répond à trois questions, en continu :
+//    1. Est-ce que ce qu'on ANNONCE à WhatsApp correspond à ce qu'on SAIT
+//       parler ? (c'est ce décalage qui a causé la panne du 5 août)
+//    2. Est-ce qu'une version plus récente de la bibliothèque existe ?
+//       C'est le signal avancé : elle sort parce que WhatsApp a bougé.
+//    3. Est-ce que plusieurs sessions tombent EN MÊME TEMPS ? Une session qui
+//       tombe est un incident local ; trois qui tombent dans le même quart
+//       d'heure, c'est la plateforme.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const VEILLE_TTL_MS = Number(process.env.VEILLE_TTL_MS) || 6 * 3600_000;
+// Fenêtre de corrélation : deux sessions distinctes qui tombent dedans font
+// un incident de plateforme. En dessous de 15 min on rate les vagues lentes,
+// au-dessus on rattache des pannes sans rapport.
+const INCIDENT_FENETRE_MS = Number(process.env.INCIDENT_FENETRE_MS) || 15 * 60_000;
+const INCIDENT_MIN_SESSIONS = Number(process.env.INCIDENT_MIN_SESSIONS) || 2;
+// Une fois l'incident annoncé, on se tait pendant deux heures : une vague de
+// déconnexions ne doit pas produire une vague de notifications.
+const INCIDENT_SILENCE_MS = Number(process.env.INCIDENT_SILENCE_MS) || 2 * 3600_000;
+
+const veille = {
+  a: 0,                    // date du dernier relevé
+  bibliothequeDerniere: null,   // dernière version publiée sur npm
+  waMaster: null,               // version annoncée par la branche master
+  erreur: null,
+};
+
+// Chutes récentes, pour la corrélation. On ne garde que la fenêtre utile.
+const chutes = [];
+let dernierIncidentAt = 0;
+
+function noterChute(name, code) {
+  const now = Date.now();
+  chutes.push({ name, code: Number(code) || 0, at: now });
+  while (chutes.length && now - chutes[0].at > INCIDENT_FENETRE_MS) chutes.shift();
+}
+
+/** Version du client WhatsApp Web embarquée dans la bibliothèque installée. */
+function versionWaBibliotheque() {
+  // Baileys 7 est un module ESM avec une carte d'exports : require.resolve sur
+  // un sous-chemin peut échouer selon la version de Node. On garde donc un
+  // chemin en dur en secours — une veille qui s'aveugle sur un détail de
+  // résolution de modules ne vaut rien.
+  const candidats = [];
+  try { candidats.push(path.dirname(require.resolve('@whiskeysockets/baileys/package.json'))); } catch {}
+  candidats.push(path.join(__dirname, 'node_modules', '@whiskeysockets', 'baileys'));
+  for (const base of candidats) {
+    try {
+      const src = fs.readFileSync(path.join(base, 'lib', 'Defaults', 'index.js'), 'utf8');
+      const m = src.match(/const version = \[(\d+),\s*(\d+),\s*(\d+)\]/);
+      if (m) return [Number(m[1]), Number(m[2]), Number(m[3])];
+    } catch {}
+  }
+  return null;
+}
+
+async function rafraichirVeille() {
+  if (Date.now() - veille.a < VEILLE_TTL_MS) return;
+  veille.a = Date.now();
+  veille.erreur = null;
+  try {
+    const [npmRes, masterRes] = await Promise.allSettled([
+      axios.get('https://registry.npmjs.org/@whiskeysockets/baileys', { timeout: 15_000 }),
+      axios.get('https://raw.githubusercontent.com/WhiskeySockets/Baileys/master/src/Defaults/index.ts',
+        { timeout: 15_000, responseType: 'text' }),
+    ]);
+    if (npmRes.status === 'fulfilled') {
+      veille.bibliothequeDerniere = npmRes.value.data?.['dist-tags']?.latest || null;
+    }
+    if (masterRes.status === 'fulfilled') {
+      const m = String(masterRes.value.data).match(/const version = \[(\d+),\s*(\d+),\s*(\d+)\]/);
+      veille.waMaster = m ? [Number(m[1]), Number(m[2]), Number(m[3])].join('.') : null;
+    }
+  } catch (e) {
+    veille.erreur = e.message;
+  }
+}
+
+/**
+ * L'état de la plateforme, en une structure lisible par un humain pressé.
+ *
+ * `prevision` est volontairement une phrase et pas un score : ce qu'un
+ * exploitant veut savoir à 22 h, c'est « qu'est-ce qui va me tomber dessus »,
+ * pas « 0.62 ».
+ */
+async function etatPlateforme() {
+  await rafraichirVeille().catch(() => {});
+
+  const waBib = versionWaBibliotheque();
+  const annoncee = WA_VERSION.length === 3
+    ? WA_VERSION.join('.')
+    : (WA_VERSION_SUIVRE_MASTER ? (veille.waMaster || 'master (variable)') : (waBib ? waBib.join('.') : 'inconnue'));
+
+  const bibliotheque = BAILEYS_VERSION;
+  const derniere = veille.bibliothequeDerniere;
+  const enRetard = !!(derniere && bibliotheque && derniere !== bibliotheque);
+
+  // Décalage : on annonce une version que la bibliothèque installée
+  // n'implémente pas. C'est la faute qui a coûté la nuit du 5 août.
+  const waBibStr = waBib ? waBib.join('.') : null;
+  const decalage = !!(waBibStr && annoncee !== 'inconnue' && annoncee !== waBibStr);
+
+  // Incident en cours : sessions distinctes tombées dans la fenêtre.
+  const now = Date.now();
+  const recentes = chutes.filter((c) => now - c.at <= INCIDENT_FENETRE_MS);
+  const touchees = [...new Set(recentes.map((c) => c.name))];
+  const incident = touchees.length >= INCIDENT_MIN_SESSIONS;
+
+  const enLigne = [...sessions.values()].filter((s) => s.status === 'CONNECTED').length;
+
+  let niveau = 'ok';
+  let diagnostic = 'Rien à signaler côté WhatsApp.';
+  let prevision = 'Aucune action attendue.';
+
+  if (enRetard) {
+    niveau = 'attention';
+    diagnostic = `Une version plus récente de la bibliothèque WhatsApp existe (${derniere}, tu es en ${bibliotheque}).`;
+    prevision = 'Une nouvelle version paraît généralement parce que WhatsApp a changé quelque chose. '
+      + 'Tant qu\'elle n\'est pas installée, des déconnexions peuvent apparaître sans prévenir.';
+  }
+  if (decalage) {
+    niveau = 'critique';
+    diagnostic = `On annonce à WhatsApp la version ${annoncee} alors que la bibliothèque installée parle ${waBibStr}.`;
+    prevision = 'Ce décalage provoque des fermetures de flux à répétition. '
+      + 'Aligner les deux (ou retirer WA_VERSION) est la seule correction durable.';
+  }
+  if (incident) {
+    niveau = 'critique';
+    diagnostic = `${touchees.length} sessions sont tombées en moins de ${Math.round(INCIDENT_FENETRE_MS / 60000)} minutes.`;
+    prevision = 'Plusieurs comptes touchés en même temps : la cause est côté WhatsApp, pas côté vendeur. '
+      + 'Les reconnexions automatiques suffisent le plus souvent ; sinon, une montée de version sera nécessaire.';
+  }
+
+  return {
+    niveau, diagnostic, prevision,
+    bibliotheque: { installee: bibliotheque, derniere, en_retard: enRetard },
+    whatsapp:     { annoncee, embarquee: waBibStr, master: veille.waMaster, decalage },
+    sessions:     { total: sessions.size, en_ligne: enLigne },
+    incident: {
+      en_cours: incident,
+      fenetre_min: Math.round(INCIDENT_FENETRE_MS / 60000),
+      sessions_touchees: touchees,
+      chutes: recentes.map((c) => ({ session: c.name, code: c.code, at: c.at })),
+    },
+    veille: { dernier_releve: veille.a || null, erreur: veille.erreur },
+  };
+}
+
+/**
+ * Prévient Camille qu'un incident touche PLUSIEURS comptes.
+ *
+ * Un vendeur dont l'agent tombe pense d'abord à son téléphone, puis à nous.
+ * Lui dire « ce n'est pas toi, c'est WhatsApp, et on le sait déjà » vaut mieux
+ * qu'un silence pendant qu'on répare — c'est la différence entre une panne et
+ * une panne qui fait perdre un client.
+ */
+async function annoncerIncidentPlateforme(etat) {
+  if (!etat.incident.en_cours) return;
+  if (Date.now() - dernierIncidentAt < INCIDENT_SILENCE_MS) return;
+  dernierIncidentAt = Date.now();
+  console.warn(`[plateforme] ⚠️  incident : ${etat.diagnostic}`);
+  for (const name of etat.incident.sessions_touchees) {
+    await postSessionState(name, 'PLATFORM_INCIDENT', etat.diagnostic, {
+      portee: 'plateforme',
+      prevision: etat.prevision,
+      sessions_touchees: etat.incident.sessions_touchees.length,
+    });
+  }
+}
+
+app.get('/api/platform', auth, async (_req, res) => {
+  try {
+    res.json(await etatPlateforme());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.get('/health', (_req, res) => res.json({ ok: true, sessions: sessions.size }));
 
