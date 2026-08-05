@@ -1417,7 +1417,40 @@ const veille = {
   bibliothequeDerniere: null,   // dernière version publiée sur npm
   waMaster: null,               // version annoncée par la branche master
   erreur: null,
+  signalee: null,               // dernière version déjà annoncée aux administrateurs
 };
+
+/**
+ * Prévient les administrateurs qu'une version est parue.
+ *
+ * C'est le signal AVANCÉ : une release de Baileys paraît parce que WhatsApp a
+ * changé quelque chose, quelques jours avant que les déconnexions ne
+ * commencent. L'annoncer permet de programmer la montée plutôt que de la subir.
+ *
+ * Une seule annonce par version : la veille tourne toutes les six heures, et
+ * répéter la même nouvelle quatre fois par jour la rend invisible.
+ */
+async function annoncerVersionParue(nouvelle, installee) {
+  if (!CAMILLE_URL || !nouvelle || nouvelle === installee) return;
+  if (veille.signalee === nouvelle) return;
+  veille.signalee = nouvelle;
+  try {
+    await axios.post(
+      `${CAMILLE_URL}/api/waha/platform-alert`,
+      {
+        niveau: 'attention',
+        version: nouvelle,
+        diagnostic: `Baileys ${nouvelle} est publiée (tu es en ${installee}).`,
+        prevision: 'Une version paraît généralement parce que WhatsApp a changé son protocole. '
+          + 'Programme la montée maintenant : après, ce sont des déconnexions en pleine journée.',
+      },
+      { headers: { 'x-api-key': API_KEY }, timeout: 10_000 }
+    );
+    console.warn(`[plateforme] 📣 version ${nouvelle} signalée aux administrateurs`);
+  } catch (e) {
+    debugLog(`[plateforme] annonce de version non transmise: ${e.message}`);
+  }
+}
 
 // Chutes récentes, pour la corrélation. On ne garde que la fenêtre utile.
 const chutes = [];
@@ -1460,6 +1493,11 @@ async function rafraichirVeille() {
     ]);
     if (npmRes.status === 'fulfilled') {
       veille.bibliothequeDerniere = npmRes.value.data?.['dist-tags']?.latest || null;
+      // Au premier relevé après un démarrage, `signalee` est vide : si on est
+      // déjà à jour, on note la version courante comme « déjà annoncée » pour
+      // ne pas repartir de zéro au prochain redéploiement.
+      if (veille.bibliothequeDerniere === BAILEYS_VERSION) veille.signalee = BAILEYS_VERSION;
+      else await annoncerVersionParue(veille.bibliothequeDerniere, BAILEYS_VERSION);
     }
     if (masterRes.status === 'fulfilled') {
       const m = String(masterRes.value.data).match(/const version = \[(\d+),\s*(\d+),\s*(\d+)\]/);
@@ -2350,6 +2388,19 @@ io.on('connection', (socket) => {
       console.warn('⚠️  SÉCURITÉ : API_KEY par défaut utilisée ! Définis la variable d\'env API_KEY en production (sinon n\'importe qui peut envoyer des messages depuis ton WhatsApp).');
     }
     autoStartSessions();
+
+    // ── Veille plateforme ───────────────────────────────────────────────────
+    // Elle doit tourner d'elle-même. Ne la rafraîchir qu'à l'ouverture de la
+    // console ou après une déconnexion la réduirait à un constat : le signal
+    // avancé n'a de valeur que s'il arrive AVANT que quelque chose casse.
+    //
+    // Premier relevé une minute après le démarrage — le temps que les sessions
+    // se connectent, pour ne pas confondre un démarrage avec un incident.
+    const premier = setTimeout(() => { rafraichirVeille().catch(() => {}); }, 60_000);
+    if (typeof premier.unref === 'function') premier.unref();
+
+    const boucle = setInterval(() => { rafraichirVeille().catch(() => {}); }, VEILLE_TTL_MS);
+    if (typeof boucle.unref === 'function') boucle.unref();
   });
 })();
 
