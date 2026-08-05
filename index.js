@@ -115,12 +115,12 @@ const CAMILLE_URL = (process.env.CAMILLE_URL || 'https://camille.vps.buyticle.co
 const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS) || 3 * 60_000;
 const pendingStateReports = new Map(); // name → timeout
 
-async function postSessionState(name, status, reason) {
+async function postSessionState(name, status, reason, extra) {
   if (!CAMILLE_URL) return; // non configuré : on n'alerte pas, on ne casse rien
   try {
     await axios.post(
       `${CAMILLE_URL}/api/waha/session-event`,
-      { session: name, status, reason: reason || '' },
+      { session: name, status, reason: reason || '', ...(extra || {}) },
       { headers: { 'x-api-key': API_KEY }, timeout: 10_000 }
     );
   } catch (e) {
@@ -621,6 +621,75 @@ async function maybeSendShopLocation(session, jid, body) {
   }
 }
 
+// ── Automatisation en panne : détecter, prévenir, et ne pas laisser le client
+//    sans réponse ───────────────────────────────────────────────────────────────
+//
+// Quand le workflow ne répond plus (arrêté, 404, serveur tombé), WhatsApp reste
+// connecté : rien ne signale la panne. Le client écrit et n'obtient rien, et le
+// vendeur l'apprend quand quelqu'un se plaint — ou jamais.
+//
+// Deux réponses distinctes, et les deux comptent : prévenir le vendeur, et dire
+// quelque chose au client. Un silence coûte la vente ; une phrase la garde en
+// vie le temps qu'un humain reprenne la main.
+
+const WEBHOOK_FAIL_SEUIL = Number(process.env.WEBHOOK_FAIL_SEUIL) || 3;
+const FILET_COOLDOWN_MS = Number(process.env.FILET_COOLDOWN_MS) || 10 * 60_000;
+const FILET_TEXTE = process.env.FILET_TEXTE
+  || "Un instant 🙏 je transmets ton message au vendeur, il te répond tout de suite.";
+
+const webhookFails = new Map();   // session → nombre d'échecs consécutifs
+const webhookAlerte = new Map();  // session → true si le vendeur a déjà été prévenu
+const filetEnvoye = new Map();    // `session|jid` → timestamp du dernier filet
+
+/**
+ * Message d'attente au client quand la réponse automatique n'a pas pu partir.
+ *
+ * Un par conversation et par fenêtre : pendant une panne longue, répéter la
+ * même phrase à chaque message donnerait l'impression d'un second robot cassé.
+ */
+async function filetDeSecurite(session, jid) {
+  const cle = `${session}|${jid}`;
+  const now = Date.now();
+  if (now - (filetEnvoye.get(cle) || 0) < FILET_COOLDOWN_MS) return;
+  filetEnvoye.set(cle, now);
+  if (filetEnvoye.size > 2000) filetEnvoye.delete(filetEnvoye.keys().next().value);
+  try {
+    const s = getSession(session);
+    await s.client.sendMessage(toJid(jid), { text: FILET_TEXTE });
+    slog(`[${session}] 🪢 filet de sécurité envoyé à ${jid}`);
+    // Le vendeur doit savoir QUI attend, pas seulement que « ça ne marche
+    // plus » : c'est le numéro qui lui permet de reprendre la vente à la main.
+    // La cadence est celle du filet lui-même — un client, une alerte, par
+    // fenêtre — donc une panne longue ne produit pas une avalanche.
+    postSessionState(session, 'WEBHOOK_FALLBACK', '', {
+      contact: String(jid || '').replace(/@(c\.us|lid|s\.whatsapp\.net)$/, ''),
+    });
+  } catch (e) {
+    debugLog(`[${session}] filet de sécurité impossible: ${e.message}`);
+  }
+}
+
+/** Compte les échecs consécutifs et prévient camille au franchissement du seuil. */
+function noterEchecWebhook(session, raison) {
+  const n = (webhookFails.get(session) || 0) + 1;
+  webhookFails.set(session, n);
+  if (n >= WEBHOOK_FAIL_SEUIL && !webhookAlerte.get(session)) {
+    webhookAlerte.set(session, true);
+    slog(`[${session}] ⚠ automatisation en panne (${n} échecs) — alerte au vendeur`);
+    postSessionState(session, 'WEBHOOK_FAILING', raison);
+  }
+}
+
+/** Un seul succès suffit à annoncer le retour à la normale. */
+function noterSuccesWebhook(session) {
+  webhookFails.set(session, 0);
+  if (webhookAlerte.get(session)) {
+    webhookAlerte.set(session, false);
+    slog(`[${session}] ✓ automatisation rétablie`);
+    postSessionState(session, 'WEBHOOK_OK', '');
+  }
+}
+
 // ── Session Manager ───────────────────────────────────────────────────────────
 //  Chaque "session" = 1 numéro WhatsApp = 1 socket Baileys
 //  sessions Map : name → { name, status, client(sock), ... }
@@ -967,12 +1036,16 @@ async function spawnClient(data) {
         }, name)
         .then(() => {
           data.metrics.lastWebhookOkAt = Date.now();
+          noterSuccesWebhook(name);
           slog(`✓ webhook OK (${from})`);
         })
         .catch((err) => {
           data.metrics.webhookErrors += 1;
           data.metrics.lastError = { msg: `webhook: ${err.message}`, at: Date.now() };
           slog(`✗ webhook ERROR (après retries): ${err.message}`);
+          // Le client d'abord : il attend une réponse, pas une explication.
+          filetDeSecurite(name, jid).catch(() => {});
+          noterEchecWebhook(name, err.message);
         });
     }
   });
