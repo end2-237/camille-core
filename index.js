@@ -1359,6 +1359,16 @@ async function stopSession(name) {
   destroySocket(s.client);
   sessions.delete(name);
   io.emit('session:removed', { name });
+
+  // Prévenir Camille. C'était le seul chemin d'arrêt qui ne disait rien à
+  // personne : la session mourait ici pendant que la base gardait « connecté »,
+  // et l'application du vendeur affichait un agent en ligne qui ne répondait
+  // plus à un seul client. Un tableau de bord qui ment est pire qu'un tableau
+  // de bord vide.
+  //
+  // Sans temporisation : un arrêt demandé n'est pas une déconnexion passagère,
+  // il n'y a rien à attendre.
+  postSessionState(name, 'STOPPED', 'arrêt demandé').catch(() => {});
   return true;
 }
 
