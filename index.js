@@ -127,6 +127,16 @@ const WA_VERSION_SUIVRE_MASTER = process.env.WA_VERSION_SUIVRE_MASTER === '1';
 // pour une authentification perdue.
 const CONFLIT_FENETRE_MS = Number(process.env.CONFLIT_FENETRE_MS) || 120_000;
 
+// Combien de 401 d'affilée, sans jamais rouvrir, avant d'admettre que le
+// couplage est réellement mort et de repartir sur un QR.
+//
+// Ne pas effacer au premier 401 était la correction du 5 août ; ne jamais
+// effacer serait l'excès inverse — la session tournerait indéfiniment en
+// reconnexion sans jamais proposer de code à scanner. Cinq tentatives laissent
+// passer un conflit ou une coupure réseau, et rendent la main en deux minutes
+// si l'appareil a vraiment été retiré depuis le téléphone.
+const AUTH_ECHECS_MAX = Number(process.env.AUTH_ECHECS_MAX) || 5;
+
 // ── Alerte du vendeur quand une session tombe ────────────────────────────────
 // Camille-core sait le premier qu'un agent est débranché, mais il ne le disait
 // à personne : le vendeur découvrait la panne quand un client se plaignait.
@@ -917,9 +927,11 @@ async function spawnClient(data) {
       // connexion stable. On se contente de logger l'état pour diagnostic.
       slog(`OPEN registered=${sock.authState?.creds?.registered} wa=${(version || []).join('.') || 'défaut'}`);
       await saveCreds();
-      // La connexion a abouti : à partir d'ici, un 401 ne doit plus jamais
-      // faire effacer ce couplage automatiquement.
+      // La connexion a abouti : à partir d'ici, un 401 isolé ne doit plus faire
+      // effacer ce couplage. Et le compteur d'échecs repart de zéro — il ne
+      // compte que les refus CONSÉCUTIFS, pas ceux d'un incident d'hier.
       noterOuverture(name);
+      data.echecsAuth = 0;
       setStatus('CONNECTED');
       data.metrics.lastStreamAt = Date.now();  // repart à neuf : pas de faux zombie juste après reconnexion
       data.qrBase64 = null;
@@ -974,37 +986,50 @@ async function spawnClient(data) {
       const conflitRecent = data.dernierConflitAt
         && (Date.now() - data.dernierConflitAt) < CONFLIT_FENETRE_MS;
 
-      // La seule question qui compte : cette session a-t-elle déjà fonctionné ?
-      // Si oui, ses identifiants sont bons et un 401 est un incident réseau ou
-      // un conflit — jamais une raison d'effacer le couplage. creds.registered
-      // ne répond pas à cette question (il reste faux après un couplage par
-      // code) : on s'appuie sur notre propre marqueur, et sur le fait d'avoir
-      // déjà reçu des messages.
-      const dejaFonctionne = aDejaOuvert(name) || data.metrics.messageCount > 0;
+      // Cette session a-t-elle un couplage valide MAINTENANT ?
+      //
+      // La question porte sur le dossier d'authentification courant, et sur
+      // rien d'autre. Le marqueur et le champ `me` de creds.json vivent tous
+      // deux dedans, donc une réinitialisation les emporte — c'est ce qu'on
+      // veut. (Le compteur de messages, lui, est persisté À CÔTÉ du dossier :
+      // il survit à une réinitialisation et affirmait donc qu'une session
+      // vidée « avait déjà fonctionné ». Résultat : on refusait d'effacer des
+      // identifiants qui n'existaient plus, et la session tournait en
+      // reconnexion sans jamais proposer de QR. Il n'entre plus dans le calcul.)
+      const coupleMaintenant = aDejaOuvert(name);
 
-      if (isUnauthorized && !isConflict && !conflitRecent && !dejaFonctionne) {
-        // Jamais ouverte, jamais reçu un message : les identifiants sont des
-        // brouillons de couplage inutilisables. Là seulement on repart de zéro.
+      if (isUnauthorized) data.echecsAuth = (data.echecsAuth || 0) + 1;
+
+      if (isUnauthorized && !isConflict && !conflitRecent
+          && (!coupleMaintenant || data.echecsAuth >= AUTH_ECHECS_MAX)) {
+        // Deux cas mènent ici, et un seul geste les règle : repartir sur un
+        // couplage neuf.
+        //   — aucun couplage en cours : les identifiants sont des brouillons ;
+        //   — un couplage existait, mais AUTH_ECHECS_MAX tentatives d'affilée
+        //     ont échoué sans jamais rouvrir. À ce stade ce n'est plus un
+        //     incident passager, c'est un appareil retiré côté téléphone.
+        const raison = coupleMaintenant
+          ? `${data.echecsAuth} échecs d'authentification d'affilée`
+          : 'couplage jamais abouti';
         setStatus('AUTH_FAILURE');
-        data.metrics.lastError = { msg: `auth failure (${code}) couplage jamais abouti — re-couplage`, at: Date.now() };
+        data.echecsAuth = 0;
+        data.metrics.lastError = { msg: `auth failure (${code}) — ${raison}, re-couplage`, at: Date.now() };
         io.emit('session:update', { name, status: data.status });
         reportSessionState(name, 'AUTH_FAILURE', `auth failure ${code}`);
-        console.warn(`[${name}] ❌ Auth failure code=${code} — session jamais ouverte, creds effacés, re-couplage`);
+        console.warn(`[${name}] ❌ Auth failure code=${code} — ${raison}, creds effacés, re-couplage`);
         try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
-        scheduleReconnect(name, `auth failure ${code} (couplage jamais abouti) → nouveau couplage`, { immediate: true });
+        scheduleReconnect(name, `auth failure ${code} (${raison}) → nouveau couplage`, { immediate: true });
       } else if (isUnauthorized) {
-        // Session qui a déjà tourné : on reconnecte avec les MÊMES identifiants.
-        // Si c'est un vrai « supprimer l'appareil » côté téléphone, WhatsApp
-        // refusera durablement et le vendeur rescannera depuis le dashboard —
-        // ce qui reste infiniment préférable à un couplage détruit par erreur
-        // sur un incident passager.
+        // Couplage valide : on reconnecte avec les MÊMES identifiants. C'est le
+        // cas du conflit et de l'incident réseau, où effacer coûterait un
+        // rescan pour rien. Le compteur ci-dessus borne l'obstination.
         const cause = conflitRecent ? 'conflit' : 'inconnue';
         setStatus('DISCONNECTED');
-        data.metrics.lastError = { msg: `401 sur session déjà ouverte (${cause}) — reconnexion sans effacer les creds`, at: Date.now() };
+        data.metrics.lastError = { msg: `401 sur session couplée (${cause}) — tentative ${data.echecsAuth}/${AUTH_ECHECS_MAX}`, at: Date.now() };
         io.emit('session:update', { name, status: data.status });
-        reportSessionState(name, 'DISCONNECTED', `401 sur session déjà ouverte (${cause})`);
-        console.warn(`[${name}] ⚠️  401 sur session déjà ouverte (${cause}) — reconnexion SANS effacer les creds`);
-        scheduleReconnect(name, `401 sur session déjà ouverte (${cause})`);
+        reportSessionState(name, 'DISCONNECTED', `401 sur session couplée (${cause})`);
+        console.warn(`[${name}] ⚠️  401 sur session couplée (${cause}) — tentative ${data.echecsAuth}/${AUTH_ECHECS_MAX}, creds conservés`);
+        scheduleReconnect(name, `401 sur session couplée (${cause})`);
       } else if (isRestart) {
         setStatus('DISCONNECTED');
         console.log(`[${name}] 🔁 Restart required (515) — reconnexion immédiate`);
