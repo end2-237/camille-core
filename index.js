@@ -37,6 +37,7 @@ const axios    = require('axios');
 const path     = require('path');
 const fs        = require('fs');
 const crypto   = require('crypto');
+const dns      = require('dns').promises;
 const pino     = require('pino');
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -874,7 +875,26 @@ async function spawnClient(data) {
     // mapping → no messages despite successful connection".
     syncFullHistory: false,
     markOnlineOnConnect: false,      // n'apparaît pas "en ligne" en permanence
-    generateHighQualityLinkPreview: false,
+    // Un lien envoyé seul s'affichait comme du texte souligné, sans vignette :
+    // Baileys sait fabriquer l'aperçu, mais il lui faut `link-preview-js` (pair
+    // optionnel) pour lire les balises Open Graph, et `jimp` pour la miniature.
+    // Les deux manquaient — la génération échouait en silence à chaque message.
+    // `true` fait téléverser l'image en pleine taille sur les serveurs WhatsApp
+    // (carte complète) au lieu d'une vignette de 192 px.
+    // La génération reste demandée AU CAS PAR CAS par /api/sendText : voir
+    // `linkPreview` là-bas. Ici on ne fait qu'autoriser la version haute qualité.
+    generateHighQualityLinkPreview: true,
+    // Baileys reverse ces options dans la requête qui va lire les balises de la
+    // page. Sans en-tête User-Agent, beaucoup de sites (Cloudflare en tête)
+    // répondent 403 à un client inconnu : on obtiendrait une page vide et donc
+    // aucun aperçu, sans que rien ne le dise. Le délai reste celui de Baileys.
+    options: {
+      headers: {
+        'user-agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+          '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    },
     // getMessage : renvoie l'original depuis notre cache pour satisfaire les
     // demandes de retry de (re)chiffrement de WhatsApp (sinon "en attente de ce
     // message" côté contact). undefined si absent → Baileys gère proprement.
@@ -1393,6 +1413,47 @@ function autoStartSessions() {
 const randomDelay = (min, max) =>
   new Promise(r => setTimeout(r, Math.floor(Math.random() * (max - min + 1)) + min));
 
+// ── Aperçu de lien : ne suivre que ce qui est vraiment public ─────────────────
+//
+// Même expression que Baileys (Defaults/index.js) — inutile de contrôler une
+// adresse qu'il n'ira pas chercher. Elle n'accepte que https, refuse la forme
+// user:motdepasse@, et exige un nom de domaine avec une vraie extension : ni
+// http://, ni [::1], ni 169.254.169.254 ne passent déjà cette porte.
+const URL_APERCU = /https:\/\/(?![^:@/\s]+:[^:@/\s]+@)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(:\d+)?(\/[^\s]*)?/;
+
+// Reste le cas d'un nom de domaine public qui résout vers une adresse interne.
+// C'est exactement le défaut de link-preview-js, et il n'a pas de correctif :
+// on le traite ici, en refusant l'aperçu plutôt qu'en allant chercher la page.
+function adressePrivee(ip) {
+  if (/^127\./.test(ip) || ip === '0.0.0.0')            return true;  // boucle locale
+  if (/^10\./.test(ip))                                  return true;  // RFC1918
+  if (/^192\.168\./.test(ip))                            return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip))             return true;
+  if (/^169\.254\./.test(ip))                            return true;  // lien-local, métadonnées cloud
+  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip)) return true; // CGNAT
+  const v6 = String(ip).toLowerCase();
+  if (v6 === '::1' || v6 === '::')                       return true;
+  if (/^f[cd]/.test(v6))                                 return true;  // fc00::/7
+  if (/^fe80/.test(v6))                                  return true;  // lien-local v6
+  return false;
+}
+
+async function lienApercevable(text) {
+  const m = String(text || '').match(URL_APERCU);
+  if (!m) return false;
+  try {
+    const hote = new URL(m[0]).hostname;
+    const adresses = await dns.lookup(hote, { all: true });
+    if (!adresses.length) return false;
+    // Une seule adresse interne suffit à refuser : un domaine qui répond à la
+    // fois en public et en interne n'est pas un domaine de confiance.
+    return !adresses.some(a => adressePrivee(a.address));
+  } catch (err) {
+    console.warn('[sendText] aperçu refusé pour', m[0], '—', err.message);
+    return false;
+  }
+}
+
 const getSession = (session) => {
   const s = sessions.get(session);
   if (!s)                         throw new Error(`Session "${session}" introuvable`);
@@ -1750,24 +1811,102 @@ app.get('/api/qr', auth, (req, res) => {
 
 // ── Envoi de messages (compatibles WAHA / v1) ─────────────────────────────────
 
-// POST /api/sendText   { chatId, text, session }
+// POST /api/sendText   { chatId, text, session, linkPreview? }
+//
+// `linkPreview` est facultatif et vaut false par défaut : sans lui, le message
+// part exactement comme avant. Il n'est pas activé partout pour deux raisons.
+//
+// D'abord parce que ça changerait l'allure de messages qui ne demandent rien :
+// un panier qui liste trois produits avec leurs liens gagnerait une carte
+// d'aperçu sur le premier, sans que personne l'ait voulu.
+//
+// Ensuite pour la sécurité. `link-preview-js` va chercher la page pour lire ses
+// balises Open Graph, et il traîne un défaut connu sans correctif (GHSA-4gp8-
+// rjrq-ch6q) : une adresse qui pointe vers le réseau interne est suivie comme
+// une autre. Tant que l'aperçu se demande message par message, sur des liens
+// que le marchand a écrits lui-même, cette faille n'a pas de prise — un texte
+// produit par le modèle ou recopié d'un client n'en déclenche jamais.
+// resolutionPublique() ferme quand même la porte, au cas où.
 app.post('/api/sendText', auth, async (req, res) => {
-  let { chatId, text, session = 'default' } = req.body;
+  let { chatId, text, session = 'default', linkPreview = false } = req.body;
   if (!chatId || !text) return res.status(400).json({ error: 'chatId et text requis' });
 
   try {
     const s   = getSession(session);
     const jid = toJid(chatId);
 
+    // `undefined` = Baileys génère l'aperçu ; `null` = il n'essaie même pas.
+    const apercu = (linkPreview === true || linkPreview === 'true')
+      ? (await lienApercevable(text) ? undefined : null)
+      : null;
+
     await s.client.sendPresenceUpdate('composing', jid);
     await randomDelay(1200, 2500);
-    await s.client.sendMessage(jid, { text });
+    await s.client.sendMessage(jid, { text, linkPreview: apercu });
     await s.client.sendPresenceUpdate('paused', jid);
 
     res.json({ success: true });
   } catch (err) {
     console.error('[sendText]', err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/linkPreview?url=…   — ce que WhatsApp verrait, avant de l'envoyer.
+//
+// Un aperçu absent a deux causes qui ne se réparent pas au même endroit : ou
+// bien la passerelle n'a pas su le fabriquer, ou bien la page ne dit rien
+// d'elle-même. WhatsApp n'invente pas de vignette : il lui faut au minimum un
+// titre, et une balise og:image pour l'illustration. Sans cette route, les deux
+// cas se ressemblent — un lien souligné — et on corrige à l'aveugle.
+app.get('/api/linkPreview', auth, async (req, res) => {
+  const url = String(req.query.url || '').trim();
+  if (!url) return res.status(400).json({ error: 'Paramètre url requis' });
+
+  if (!URL_APERCU.test(url)) {
+    return res.json({
+      ok: false,
+      raison: 'url_non_eligible',
+      detail: "WhatsApp n'aperçoit que les adresses https:// avec un nom de domaine complet.",
+    });
+  }
+  if (!(await lienApercevable(url))) {
+    return res.json({
+      ok: false,
+      raison: 'adresse_non_publique',
+      detail: "Le domaine ne résout pas vers une adresse publique — aperçu refusé.",
+    });
+  }
+
+  try {
+    const { getLinkPreview } = await import('link-preview-js');
+    const info = await getLinkPreview(url, {
+      timeout: 8000,
+      followRedirects: 'follow',
+      headers: {
+        'user-agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+          '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+    const titre  = String(info?.title || '');
+    const images = Array.isArray(info?.images) ? info.images : [];
+    res.json({
+      // Le test de Baileys, à l'identique : sans titre, pas de carte du tout.
+      ok:          !!titre,
+      titre,
+      description: String(info?.description || ''),
+      image:       images[0] || null,
+      raison: titre
+        ? undefined
+        : 'page_sans_titre',
+      detail: titre
+        ? undefined
+        : "La page ne renvoie ni <title> ni og:title. WhatsApp affichera le lien "
+          + "en texte souligné tant que ces balises manquent — c'est au site de les ajouter.",
+    });
+  } catch (err) {
+    res.json({ ok: false, raison: 'lecture_impossible', detail: err.message });
   }
 });
 
