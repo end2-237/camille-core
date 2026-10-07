@@ -117,8 +117,10 @@ const MAX_SESSIONS         = Number(process.env.MAX_SESSIONS)         || 5;
 // réellement installée (clé `version` absente => Baileys prend la sienne).
 // WA_VERSION="2.3000.1043857760" force un numéro précis si WhatsApp finit par
 // refuser celui-là, et WA_VERSION_SUIVRE_MASTER=1 restaure l'ancien comportement.
+// Les morceaux vides sont ignorés : un point en trop ("2.3000.1043857760.")
+// donnait sinon 4 nombres au lieu de 3, et la valeur était rejetée sans un mot.
 const WA_VERSION = String(process.env.WA_VERSION || '')
-  .split('.').map((n) => Number(n.trim())).filter(Number.isFinite);
+  .split('.').map((n) => n.trim()).filter(Boolean).map(Number).filter(Number.isFinite);
 const WA_VERSION_SUIVRE_MASTER = process.env.WA_VERSION_SUIVRE_MASTER === '1';
 
 // ── Fenêtre de conflit ───────────────────────────────────────────────────────
