@@ -114,7 +114,7 @@ const MAX_SESSIONS         = Number(process.env.MAX_SESSIONS)         || 5;
 // redéploiement. C'est intenable pour un service en production.
 //
 // Par défaut on annonce donc la version embarquée dans la bibliothèque qu'on a
-// réellement installée (version: undefined => Baileys prend la sienne).
+// réellement installée (clé `version` absente => Baileys prend la sienne).
 // WA_VERSION="2.3000.1043857760" force un numéro précis si WhatsApp finit par
 // refuser celui-là, et WA_VERSION_SUIVRE_MASTER=1 restaure l'ancien comportement.
 const WA_VERSION = String(process.env.WA_VERSION || '')
@@ -843,7 +843,11 @@ async function spawnClient(data) {
   }
 
   const sock = makeWASocket({
-    version,
+    // Baileys fusionne { ...DEFAULT_CONNECTION_CONFIG, ...config } : une clé
+    // `version: undefined` ÉCRASE sa version par défaut, et la connexion meurt
+    // aussitôt ("Cannot read properties of undefined (reading 'join')"). On ne
+    // passe donc la clé que si on a réellement une version à imposer.
+    ...(version ? { version } : {}),
     auth: {
       creds: state.creds,
       keys:  makeCacheableSignalKeyStore(state.keys, logger),
