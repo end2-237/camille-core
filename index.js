@@ -114,11 +114,13 @@ const MAX_SESSIONS         = Number(process.env.MAX_SESSIONS)         || 5;
 // redéploiement. C'est intenable pour un service en production.
 //
 // Par défaut on annonce donc la version embarquée dans la bibliothèque qu'on a
-// réellement installée (version: undefined => Baileys prend la sienne).
+// réellement installée (clé `version` absente => Baileys prend la sienne).
 // WA_VERSION="2.3000.1043857760" force un numéro précis si WhatsApp finit par
 // refuser celui-là, et WA_VERSION_SUIVRE_MASTER=1 restaure l'ancien comportement.
+// Les morceaux vides sont ignorés : un point en trop ("2.3000.1043857760.")
+// donnait sinon 4 nombres au lieu de 3, et la valeur était rejetée sans un mot.
 const WA_VERSION = String(process.env.WA_VERSION || '')
-  .split('.').map((n) => Number(n.trim())).filter(Number.isFinite);
+  .split('.').map((n) => n.trim()).filter(Boolean).map(Number).filter(Number.isFinite);
 const WA_VERSION_SUIVRE_MASTER = process.env.WA_VERSION_SUIVRE_MASTER === '1';
 
 // ── Fenêtre de conflit ───────────────────────────────────────────────────────
@@ -843,7 +845,11 @@ async function spawnClient(data) {
   }
 
   const sock = makeWASocket({
-    version,
+    // Baileys fusionne { ...DEFAULT_CONNECTION_CONFIG, ...config } : une clé
+    // `version: undefined` ÉCRASE sa version par défaut, et la connexion meurt
+    // aussitôt ("Cannot read properties of undefined (reading 'join')"). On ne
+    // passe donc la clé que si on a réellement une version à imposer.
+    ...(version ? { version } : {}),
     auth: {
       creds: state.creds,
       keys:  makeCacheableSignalKeyStore(state.keys, logger),
@@ -854,6 +860,9 @@ async function spawnClient(data) {
     // les codes de pairing par WhatsApp (issues #1761/#2370). Browsers.macOS('Chrome')
     // = chaîne standard reconnue → pairing fiable.
     browser: Browsers.macOS('Chrome'),
+    // Un média déjà téléversé chez WhatsApp est réutilisé tel quel (voir
+    // cacheMedias plus bas) : la salve d'accueil ne repart plus en entier.
+    mediaCache: cacheMedias(name),
     // ── Durcissement pour comptes à fort volume (centaines de conversations) ──
     // Les "init queries" (privacy, blocklist, app-state) timeoutaient à ~30s sur
     // les gros comptes → connexion instable. On laisse 60s.
@@ -1476,6 +1485,104 @@ async function fetchMediaBuffer(url) {
   return Buffer.from(resp.data);
 }
 
+// ── Cache des médias envoyés ─────────────────────────────────────────────────
+//
+// Chaque nouveau visiteur reçoit la même salve (vidéos, vocaux). Avant, CHAQUE
+// envoi retéléchargeait le fichier depuis le stockage puis le re-téléversait
+// chez WhatsApp : ~4 Go sortants en 15 h, pour les mêmes six fichiers.
+//
+// Baileys sait réutiliser un média déjà téléversé (même clé, même adresse chez
+// WhatsApp — c'est ce que fait un transfert), mais seulement si on lui donne un
+// CHEMIN et non des octets. On garde donc une copie locale par URL, et on lui
+// passe ce chemin : premier envoi téléversé, les suivants instantanés.
+//
+// Un fichier remplacé via /api/media/upload vide le cache. Pour une URL
+// externe remplacée au même nom, la copie expire au bout de MEDIA_CACHE_TTL_MIN.
+const MEDIA_CACHE_TTL_MS = Math.max(1, Number(process.env.MEDIA_CACHE_TTL_MIN) || 120) * 60_000;
+const MEDIA_TMP = path.join(require('os').tmpdir(), 'camille-medias');
+const cachesMedias = new Map();
+
+function cacheMedias(session) {
+  if (!cachesMedias.has(session)) {
+    const m = new Map();
+    cachesMedias.set(session, {
+      get(k) {
+        const e = m.get(k);
+        if (!e) return undefined;
+        if (e.exp < Date.now()) { m.delete(k); return undefined; }
+        return e.v;
+      },
+      set(k, v) {
+        if (m.size >= 200) m.delete(m.keys().next().value);
+        m.set(k, { v, exp: Date.now() + MEDIA_CACHE_TTL_MS });
+      },
+      del(k) { m.delete(k); },
+      flushAll() { m.clear(); },
+    });
+  }
+  return cachesMedias.get(session);
+}
+
+function viderCachesMedias() {
+  for (const c of cachesMedias.values()) c.flushAll();
+}
+
+/** Le chemin local d'un média : le fichier de /media s'il existe, sinon une copie par URL. */
+function cheminMedia(url) {
+  const mediaMatch = String(url).match(/\/media\/([^/?#]+)/);
+  if (mediaMatch) {
+    const local = path.join(MEDIA_DIR, mediaMatch[1]);
+    if (fs.existsSync(local)) return { chemin: local, local: true };
+  }
+  const ext = (String(url).split(/[?#]/)[0].match(/\.([a-z0-9]{2,5})$/i) || [])[1] || 'bin';
+  // Un lien Supabase signé change de jeton à chaque signature, pour le même
+  // fichier : c'est le chemin qui l'identifie.
+  const identite = /\/storage\/v1\/object\//.test(String(url)) ? String(url).split(/[?#]/)[0] : String(url);
+  const nom = crypto.createHash('sha1').update(identite).digest('hex') + '.' + ext;
+  return { chemin: path.join(MEDIA_TMP, nom), local: false };
+}
+
+/**
+ * Envoie un média par son URL en profitant du cache de Baileys.
+ * `minOctets` reprend le contrôle d'avant : un fichier quasi vide est une
+ * erreur du stockage, pas un média.
+ */
+async function envoyerMediaCache(s, session, jid, type, url, extra = {}, minOctets = 100) {
+  const { chemin, local } = cheminMedia(url);
+  const cle = `${type}:${chemin}`;
+  const cache = cacheMedias(session);
+  const enCache = Boolean(cache.get(cle));
+
+  if (!enCache) {
+    if (local) {
+      const taille = fs.statSync(chemin).size;
+      if (taille < minOctets) throw new Error(`Fichier ${type} invalide ou introuvable (${taille} bytes)`);
+    } else {
+      const buffer = await fetchMediaBuffer(url);
+      if (!buffer || buffer.length < minOctets) {
+        throw new Error(`Fichier ${type} invalide ou introuvable (${buffer ? buffer.length : 0} bytes)`);
+      }
+      // Écrit à côté puis renommé : un envoi simultané ne lit jamais un fichier à moitié écrit.
+      fs.mkdirSync(MEDIA_TMP, { recursive: true });
+      const tmp = `${chemin}.${process.pid}.${Date.now()}`;
+      fs.writeFileSync(tmp, buffer);
+      fs.renameSync(tmp, chemin);
+    }
+  }
+
+  const contenu = { [type]: { url: chemin }, ...extra };
+  try {
+    await s.client.sendMessage(jid, contenu);
+  } catch (e) {
+    // Un média en cache peut avoir expiré chez WhatsApp : on le re-téléverse une fois.
+    if (!enCache) throw e;
+    cache.del(cle);
+    if (!local && !fs.existsSync(chemin)) fs.writeFileSync(chemin, await fetchMediaBuffer(url));
+    await s.client.sendMessage(jid, contenu);
+  }
+  console.log(`[media] ${type} ${enCache ? 'réutilisé (cache)' : 'téléversé'} : ${url}`);
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
@@ -1921,15 +2028,11 @@ app.post('/api/sendVoice', auth, async (req, res) => {
     const jid = toJid(chatId);
     console.log('[sendVoice] jid:', jid, 'url:', file.url);
 
-    const buffer = await fetchMediaBuffer(file.url);
-    if (!buffer || buffer.length < 500) {
-      throw new Error(`Fichier audio invalide ou introuvable (${buffer ? buffer.length : 0} bytes)`);
-    }
-
     await s.client.sendPresenceUpdate('recording', jid);
     await randomDelay(1500, 3000);
     // ptt: true → note vocale (et non pièce jointe audio)
-    await s.client.sendMessage(jid, { audio: buffer, ptt: true, mimetype: 'audio/ogg; codecs=opus' });
+    await envoyerMediaCache(s, session, jid, 'audio', file.url,
+      { ptt: true, mimetype: 'audio/ogg; codecs=opus' }, 500);
     await s.client.sendPresenceUpdate('paused', jid);
 
     console.log('[sendVoice] PTT envoyé ✓');
@@ -1957,13 +2060,8 @@ app.post('/api/sendVideo', auth, async (req, res) => {
     const jid = toJid(chatId);
     console.log('[sendVideo] jid:', jid, 'url:', file.url, caption ? `caption:"${String(caption).slice(0,60)}"` : '(sans légende)');
 
-    const buffer = await fetchMediaBuffer(file.url);
-    if (!buffer || buffer.length < 500) {
-      throw new Error(`Fichier vidéo invalide ou introuvable (${buffer ? buffer.length : 0} bytes)`);
-    }
-
     await randomDelay(500, 1500);
-    await s.client.sendMessage(jid, { video: buffer, caption: caption || undefined });
+    await envoyerMediaCache(s, session, jid, 'video', file.url, { caption: caption || undefined }, 500);
     console.log('[sendVideo] envoyé ✓');
 
     res.json({ success: true });
@@ -1989,13 +2087,8 @@ app.post('/api/sendImage', auth, async (req, res) => {
     const jid = toJid(chatId);
     console.log('[sendImage] jid:', jid, 'url:', file.url, caption ? `caption:"${String(caption).slice(0,60)}"` : '(sans légende)');
 
-    const buffer = await fetchMediaBuffer(file.url);
-    if (!buffer || buffer.length < 100) {
-      throw new Error(`Image invalide ou introuvable (${buffer ? buffer.length : 0} bytes)`);
-    }
-
     await randomDelay(500, 1500);
-    await s.client.sendMessage(jid, { image: buffer, caption: caption || undefined });
+    await envoyerMediaCache(s, session, jid, 'image', file.url, { caption: caption || undefined }, 100);
     console.log('[sendImage] envoyé ✓');
 
     res.json({ success: true });
@@ -2202,9 +2295,9 @@ app.post('/api/sendGif', auth, (req, res) => {
   caption = caption || file.caption || '';
   wrap(res, session, 'sendGif', async () => {
     const s = getSession(session);
-    const buffer = await fetchMediaBuffer(file.url);
     await randomDelay(400, 1200);
-    await s.client.sendMessage(toJid(chatId), { video: buffer, gifPlayback: true, caption: caption || undefined });
+    await envoyerMediaCache(s, session, toJid(chatId), 'video', file.url,
+      { gifPlayback: true, caption: caption || undefined });
     return { success: true };
   });
 });
@@ -2506,6 +2599,7 @@ app.post('/api/media/upload', auth, (req, res) => {
   try {
     const filePath = path.join(MEDIA_DIR, safe);
     fs.writeFileSync(filePath, Buffer.from(data, 'base64'));
+    viderCachesMedias(); // un fichier remplacé ne doit pas resservir l'ancien
     // URL publique : env explicite > host de la requête (proxy Render/Coolify) > localhost.
     const fwdProto = (req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
     const fwdHost  = (req.headers['x-forwarded-host']  || req.headers.host || '').split(',')[0].trim();
@@ -2525,6 +2619,7 @@ app.delete('/api/media/:filename', auth, (req, res) => {
   const filePath = path.join(MEDIA_DIR, safe);
   try {
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    viderCachesMedias();
     console.log(`[media] delete → ${safe}`);
     res.json({ success: true });
   } catch (e) {
